@@ -41,6 +41,14 @@
 
 <!-- Three or four sentences: what a user asks for, and what they get back. -->
 
+FitFindr helps someone shop secondhand clothes. The user types a request like
+`'vintage graphic tee under $30'`, and the agent searches 40 thrift listings for
+the best match within their price and size. It returns the matched item (title,
+price, size and platform), an outfit that pairs the item with clothes the user
+already owns (or general styling tips if their wardrobe is empty), and a short
+caption they could post about the find. If nothing matches, the agent stops
+before the outfit step and tells the user what to change, such as raising the
+budget or using different words.
 
 
 ---
