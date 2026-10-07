@@ -111,7 +111,24 @@ def _ask_one(query, wardrobe, use_trace):
     if use_trace:
         trace_module.start_trace()
 
-    session = run_agent(query, wardrobe)
+    from utils.wardrobe_memory import bought_ids
+
+    bought = bought_ids()
+    session = run_agent(query, wardrobe, bought_ids=bought)
+
+    if session["bought_match"]:
+        # Style memory: the top result is something they already bought.
+        item = session["bought_match"]
+        print(f"\n  You already bought {item['title']} (${item['price']:.0f}, {item['id']}).")
+        if sys.stdin.isatty():
+            answer = input("  Buy it again (b) or look for something new (n)? [n] ").strip().lower()
+        else:
+            answer = "n"   # nobody to ask, e.g. an evaluation run
+            print("  Looking for something new.")
+        if answer.startswith("b"):
+            session = run_agent(query, wardrobe)
+        else:
+            session = run_agent(query, wardrobe, bought_ids=bought, skip_bought=True)
 
     print()
     if session["error"]:
@@ -123,6 +140,10 @@ def _ask_one(query, wardrobe, use_trace):
             print()
         print(f"  Found:    {item.get('title')} — ${item.get('price')} on {item.get('platform')}")
         print()
+        if session.get("already_owned"):
+            names = ", ".join(w["name"] for w in session["already_owned"])
+            print(f"  Heads-up: you already own something similar: {names}")
+            print()
         print(f"  Outfit:   {session['outfit_suggestion']}")
         print()
         print(f"  Fit card: {session['fit_card']}")
@@ -139,16 +160,23 @@ def _ask_one(query, wardrobe, use_trace):
 
 
 def cmd_ask(args):
-    from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
+    from utils.data_loader import get_empty_wardrobe
+    from utils.wardrobe_memory import load_wardrobe, record_purchase
     import generate
 
-    wardrobe = get_empty_wardrobe() if args.empty_wardrobe else get_example_wardrobe()
+    # The remembered wardrobe (or the example one, until something is bought).
+    wardrobe = get_empty_wardrobe() if args.empty_wardrobe else load_wardrobe()
     if args.empty_wardrobe:
         print("(running with an empty wardrobe)")
 
     try:
         if args.query:
-            _ask_one(args.query, wardrobe, args.trace)
+            session = _ask_one(args.query, wardrobe, args.trace)
+            if args.buy:
+                if session["selected_item"]:
+                    print(f"  {record_purchase(session['selected_item'])}\n")
+                else:
+                    print("  Nothing was found, so nothing was bought.\n")
         else:
             print("Ask for something, or press Enter on an empty line to quit.\n")
             while True:
@@ -162,6 +190,13 @@ def cmd_ask(args):
                 _ask_one(query, wardrobe, args.trace)
     finally:
         print(generate.usage())
+
+
+def cmd_keep(args):
+    """Style memory: keep a bought item, so it joins the wardrobe now."""
+    from utils.wardrobe_memory import keep
+
+    print(f"\n  {keep(args.listing_id)}\n")
 
 
 def build_parser():
@@ -192,7 +227,16 @@ def build_parser():
         action="store_true",
         help="run as a user with nothing saved — one of unit 4's failure modes",
     )
+    p_ask.add_argument(
+        "--buy",
+        action="store_true",
+        help="buy the item found; it joins the wardrobe when the return window closes",
+    )
     p_ask.set_defaults(func=cmd_ask)
+
+    p_keep = sub.add_parser("keep", help="close a purchase's return window early")
+    p_keep.add_argument("listing_id", help="e.g. lst_007")
+    p_keep.set_defaults(func=cmd_keep)
 
     return parser
 
