@@ -67,24 +67,61 @@ budget or using different words.
 
 ### `search_listings`
 
-- **What it does:**
-- **Inputs:** <!-- name and type each: `max_price` (float), not "a price" -->
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Searches the 40 listings in `data/listings.json` for items
+  whose title, description, style_tags, colors or category contain the words in
+  `description`, keeping only those within the price ceiling and size.
+- **Inputs:** `description` (str): keywords like `"vintage graphic tee"`.
+  `size` (str or None): a size like `"L"`, or None to skip the size filter.
+  `max_price` (float or None): the highest price allowed, inclusive, or None to
+  skip the price filter.
+  - *Size rule:* the size is matched case-insensitively against whole pieces of
+    the listing's size, split on `/`, spaces and brackets. `"L"` matches `L`,
+    `M/L` and `L/XL`, but not `XL` or `W30 L30`.
+  - *Keyword rule:* `description` is lowercased and split into words. Each word
+    found in a listing's combined text counts as one match. Listings with zero
+    matches are dropped.
+- **Returns:** A `list[dict]` of at most 10 listing dicts
+  (`config.SEARCH_RESULT_LIMIT`). Each dict is the full listing: `id`, `title`,
+  `description`, `category`, `style_tags`, `size`, `condition`, `price` (float),
+  `colors`, `brand` (str or None) and `platform`. Results are ordered by the
+  number of keywords found in the title (most first), then by total keyword
+  matches, then by price (cheapest first).
+- **When it has nothing:** Returns an empty list `[]`, never None and never an
+  exception.
 
 ### `suggest_outfit`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Asks the model to build outfits around the found item,
+  using only pieces the user already owns.
+- **Inputs:** `new_item` (dict): one listing dict from `search_listings`.
+  `wardrobe` (dict): a dict with an `"items"` key holding a list of wardrobe
+  item dicts (`name`, `category`, `colors`, `style_tags`, `notes`), which may be
+  empty. `num_outfits` (int, default 2): how many outfits to suggest. The loop
+  reads it from the query (e.g. `"3 outfits"`), and it is clamped to between 1
+  and 5.
+- **Returns:** A non-empty `str` holding a numbered list with exactly
+  `num_outfits` lines (`1. ...`, `2. ...`). Each line is one outfit that names
+  the new item plus pieces from the wardrobe by their `name`. It never names a
+  piece the user doesn't own.
+- **When it has nothing:** If `wardrobe["items"]` is empty, it returns a one-line
+  note that the wardrobe is empty, followed by the same numbered list of
+  `num_outfits` lines. These outfits pair the item with everyday basics (e.g.
+  plain jeans, white sneakers) instead of owned pieces. It never returns `""` and never raises.
 
 ### `create_fit_card`
 
-- **What it does:**
-- **Inputs:**
-- **Returns:**
-- **When it has nothing:**
+- **What it does:** Asks the model to write a short social media caption about
+  the thrifted find and how it's styled.
+- **Inputs:** `outfit` (str): the outfit text from `suggest_outfit`.
+  `new_item` (dict): the same listing dict that went into `suggest_outfit`.
+- **Returns:** A non-empty `str`: a caption of 2–4 sentences, followed by 1–3
+  hashtags, with a few emojis. It names the item, its price and its platform
+  once each, and mentions the brand only when `brand` is not None (so "None"
+  never appears in the caption).
+- **When it has nothing:** If `outfit` is empty or only whitespace, it still
+  calls the model, giving it only the item's category, title and price, and
+  returns a 2–4 sentence caption describing the item on its own. It never
+  returns `""` and never raises.
 
 ---
 
@@ -101,13 +138,22 @@ budget or using different words.
      The grader checks your code against what you claim here, so the file and
      function have to be real. -->
 
-**Branch rule:**
+**Branch rule:** If `search_listings` returns an empty list, put a message in
+`session["error"]` that names what to change, based on the filters that were
+used (e.g. "raise your budget above $30", "try without size M", "try fewer or
+different words"), and stop without calling `suggest_outfit`. Otherwise, take
+the first result as the selected item and go to `suggest_outfit`.
 
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** <!-- regex, string splitting, or asking the model — say which -->
+**How the query is parsed:** Regex. `under $30` becomes `max_price = 30.0`,
+`size M` becomes `size = "M"`, and `3 outfits` becomes `num_outfits = 3`. The
+words left over after removing those phrases become `description`.
 
-**What moves through the session:** <!-- which fields, in what order -->
+**What moves through the session:** `query` → `parsed` (description, size,
+max_price, num_outfits) → `search_results` → `selected_item` (the first
+result) → `outfit_suggestion` → `fit_card`. If the search is empty, `error` is
+set and the later fields stay None.
 
 ---
 
