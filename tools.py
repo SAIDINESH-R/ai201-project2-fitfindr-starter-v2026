@@ -300,3 +300,27 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
     if not caption:
         caption = f"Thrifted the {new_item['title']} for {price} on {platform} ✨ #thriftfind"
     return caption
+
+
+# ── Tool 4 (stretch): check_owned ─────────────────────────────────────────────
+
+def check_owned(new_item: dict, wardrobe: dict) -> list[dict]:
+    """
+    Does the user already own something like this? Plain code, no model call.
+
+    A wardrobe item counts as similar when it has the same category as the new
+    item and shares at least one style tag (case-insensitive).
+
+    Returns:
+        The similar wardrobe item dicts, or an empty list when there are none.
+
+    Test it from a terminal:
+        python -c "from tools import check_owned; from utils.data_loader import get_example_wardrobe, load_listings; print(check_owned(load_listings()[6], get_example_wardrobe()))"
+    """
+    category = new_item["category"].lower()
+    tags = {t.lower() for t in new_item["style_tags"]}
+    return [
+        owned for owned in wardrobe.get("items") or []
+        if owned["category"].lower() == category
+        and tags & {t.lower() for t in owned["style_tags"]}
+    ]

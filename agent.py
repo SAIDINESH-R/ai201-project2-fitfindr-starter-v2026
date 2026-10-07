@@ -17,7 +17,9 @@ import re
 
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card, price_window, _words
+from tools import (
+    search_listings, suggest_outfit, create_fit_card, check_owned, price_window, _words,
+)
 from generate import ModelUnavailable
 
 
@@ -116,12 +118,19 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "error": None,               # set when the run ended early
         "notice": None,              # set when the second branch (fallback) ran
         "alternatives": [],          # what the fallback showed instead
+        "already_owned": [],         # similar wardrobe items, from check_owned
+        "bought_match": None,        # top result was already bought; app asks the user
     }
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
 
-def run_agent(query: str, wardrobe: dict) -> dict:
+def run_agent(
+    query: str,
+    wardrobe: dict,
+    bought_ids: set[str] | None = None,
+    skip_bought: bool = False,
+) -> dict:
     """
     Run the loop once and return the finished session.
 
@@ -240,7 +249,30 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         elif next_step == "select":
             # The first result. In the fallback the list is sorted by price, so
             # the first is also the cheapest.
-            session["selected_item"] = session["search_results"][0]
+            results = session["search_results"]
+            bought = bought_ids or set()
+            if skip_bought:
+                results = [r for r in results if r["id"] not in bought]
+            if not results:
+                session["error"] = (
+                    "Everything that matched is something you already bought. "
+                    "Try different words."
+                )
+                next_step = "done"
+            elif results[0]["id"] in bought:
+                # Style memory: they already bought this exact item. Stop and
+                # let the app ask whether to go ahead or look for something new.
+                session["bought_match"] = results[0]
+                next_step = "done"
+            else:
+                session["selected_item"] = results[0]
+                next_step = "check_owned"
+
+        elif next_step == "check_owned":
+            session["already_owned"] = check_owned(
+                session["selected_item"],
+                session["wardrobe"],
+            )
             next_step = "outfit"
 
         elif next_step == "outfit":
