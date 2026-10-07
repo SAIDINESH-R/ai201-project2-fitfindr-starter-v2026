@@ -43,11 +43,11 @@
 
 FitFindr helps someone shop secondhand clothes. The user types a request like
 `'vintage graphic tee under $30'`, and the agent searches 40 thrift listings for
-the best match within their price and size. It returns the matched item (title,
+the best match in a $10 price window around their budget, in their size. It returns the matched item (title,
 price, size and platform), an outfit that pairs the item with clothes the user
 already owns (or general styling tips if their wardrobe is empty), and a short
 caption they could post about the find. If nothing matches, the agent stops
-before the outfit step and tells the user what to change, such as raising the
+before the outfit step and tells the user what to change, such as changing the
 budget or using different words.
 
 
@@ -69,17 +69,28 @@ budget or using different words.
 
 - **What it does:** Searches the 40 listings in `data/listings.json` for items
   whose title, description, style_tags, colors or category contain the words in
-  `description`, keeping only those within the price ceiling and size.
+  `description`, keeping only those inside the price window and size.
 - **Inputs:** `description` (str): keywords like `"vintage graphic tee"`.
   `size` (str or None): a size like `"L"`, or None to skip the size filter.
-  `max_price` (float or None): the highest price allowed, inclusive, or None to
-  skip the price filter.
+  `max_price` (float or None): the user's budget, or the top of their custom
+  range, or None to skip the price filter.
+  `min_price` (float or None, default None): the bottom of a custom range, or
+  None when the user gave a single budget.
+  - *Price rule:* if both `min_price` and `max_price` are given, keep listings
+    priced from `min_price` to `max_price`, inclusive. If only `max_price` is
+    given, it is a single budget and sets a $10 window, inclusive at both ends:
+    round the budget up to the next multiple of 5 and subtract 5 for the
+    bottom, and the top is bottom + 10. So $33 gives $30–40, $38 gives $35–45,
+    $45 gives $40–50, and $5 gives $0–10. If neither is given, price is not
+    filtered.
   - *Size rule:* the size is matched case-insensitively against whole pieces of
     the listing's size, split on `/`, spaces and brackets. `"L"` matches `L`,
     `M/L` and `L/XL`, but not `XL` or `W30 L30`.
-  - *Keyword rule:* `description` is lowercased and split into words. Each word
-    found in a listing's combined text counts as one match. Listings with zero
-    matches are dropped.
+  - *Keyword rule:* `description` and the listing's combined text are both
+    lowercased and split into whole words on anything that isn't a letter or
+    digit. Each query word that appears as a whole word in the listing counts
+    as one match, so `"shirt"` matches "Flannel Shirt" but not "Sweatshirt".
+    Listings with zero matches are dropped.
 - **Returns:** A `list[dict]` of at most 10 listing dicts
   (`config.SEARCH_RESULT_LIMIT`). Each dict is the full listing: `id`, `title`,
   `description`, `category`, `style_tags`, `size`, `condition`, `price` (float),
@@ -138,22 +149,53 @@ budget or using different words.
      The grader checks your code against what you claim here, so the file and
      function have to be real. -->
 
-**Branch rule:** If `search_listings` returns an empty list, put a message in
-`session["error"]` that names what to change, based on the filters that were
-used (e.g. "raise your budget above $30", "try without size M", "try fewer or
-different words"), and stop without calling `suggest_outfit`. Otherwise, take
-the first result as the selected item and go to `suggest_outfit`.
+**Branch rule:** If `search_listings` returns results, take the first one as
+the selected item and go to `suggest_outfit`. If it returns an empty list and
+the query had a price, search again with no price filter (second branch, see
+Stretch Features). If that finds no title match, or the query had no price, put a
+message in `session["error"]` that names what to change, based on the filters
+that were used (e.g. "try without size M", "try fewer or different words"), and
+stop without calling `suggest_outfit`.
 
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** Regex. `under $30` becomes `max_price = 30.0`,
-`size M` becomes `size = "M"`, and `3 outfits` becomes `num_outfits = 3`. The
+**How the query is parsed:** Regex. `under $30` becomes `max_price = 30.0`.
+`between $20 and $40` or `$20-$40` becomes `min_price = 20.0` and
+`max_price = 40.0`. `size M` becomes `size = "M"`, and `3 outfits` becomes `num_outfits = 3`. The
 words left over after removing those phrases become `description`.
 
 **What moves through the session:** `query` → `parsed` (description, size,
-max_price, num_outfits) → `search_results` → `selected_item` (the first
+min_price, max_price, num_outfits) → `search_results` → `selected_item` (the first
 result) → `outfit_suggestion` → `fit_card`. If the search is empty, `error` is
 set and the later fields stay None.
+
+---
+
+## Stretch Features (planned)
+
+<!-- Declared before building, as the rubric requires. Each one gets a run log
+     here once it's built. -->
+
+### Second branch: over-budget alternatives
+
+- **Condition:** the search with the user's price returns nothing, but the same
+  search with no price filter returns at least one listing with a query word in
+  its title. Example: `'pink shirt under $10'` (the $10 window is $5–15 and no
+  shirt is priced there).
+- **What the loop does instead:** keeps only the no-price results that have a
+  query word in their title (so `"shirt"` returns shirts, not a pink tee that
+  only matched `"pink"`). It takes the cheapest of those and runs the same
+  price window rule on its price: cheapest $37 gives $35–45, cheapest $20 gives
+  $15–25. It shows the title matches inside that window, cheapest first and up
+  to 10, labeled as outside your price range (they can be cheaper or pricier
+  than the budget), then selects the cheapest one and continues to
+  `suggest_outfit` and `create_fit_card` with it.
+- **How it differs from the empty-search stop:** the stop only happens when no
+  listing has a query word in its title at any price.
+- **Cases the normal search already covers:** `'pink shirt under $30'` with no
+  pink shirt in the window still returns the other shirts in the window,
+  because every query word counts on its own. `'shirt'` with no price returns
+  the best matches first.
 
 ---
 
@@ -175,18 +217,40 @@ $ python app.py ask '...'
 
 ```
 $ python -c "from tools import search_listings; print(search_listings('graphic tee', max_price=30))"
-
+[{'id': 'lst_015', 'title': 'Vintage Graphic Hoodie — Faded Black', 'description': 'Faded black pullover hoodie with barely-visible vintage graphic on the chest. Cozy interior. Some pilling but adds to the worn-in look.', 'category': 'tops', 'style_tags': ['vintage', 'grunge', 'graphic', 'streetwear'], 'size': 'L', 'condition': 'fair', 'price': 26.0, 'colors': ['black', 'charcoal'], 'brand': None, 'platform': 'depop'}, {'id': 'lst_011', 'title': 'Low-Rise Cargo Pants — Khaki', 'description': 'Y2K era low-rise cargo pants. Lots of pockets. Khaki color, slightly distressed at the hems. Great for layering with a long tee.', 'category': 'bottoms', 'style_tags': ['y2k', 'cargo', '2000s', 'streetwear'], 'size': 'W29', 'condition': 'fair', 'price': 27.0, 'colors': ['khaki', 'tan'], 'brand': None, 'platform': 'poshmark'}]
 ```
 
-```
-$ python -c "from tools import suggest_outfit; ..."
+Budget $30 gives the $25–35 window, so both results are inside it. The cargo
+pants match only because their description mentions "a long tee".
 
 ```
+$ python -c "from tools import suggest_outfit; from utils.data_loader import get_example_wardrobe, load_listings; print(suggest_outfit(load_listings()[0], get_example_wardrobe()))"
+1. Vintage Levi's 501 Jeans — Medium Wash + White ribbed tank top + Black cropped zip hoodie + Chunky white sneakers + Black crossbody bag
+2. Vintage Levi's 501 Jeans — Medium Wash + Oversized grey crewneck sweatshirt + Black combat boots + Brown leather belt
+```
+
+Two outfits (the default), and every piece is from the example wardrobe.
 
 ```
-$ python -c "from tools import create_fit_card; ..."
+$ AI201_CACHE=0 python -c "from tools import create_fit_card; from utils.data_loader import load_listings; print(create_fit_card('jeans and white sneakers', load_listings()[0]))"
+Scored these vintage Levi's 501 jeans for just $38 and I am never taking them off 👖✨ Throwing them on with crisp white sneakers gives the ultimate effortless, off-duty coffee run vibe. Snagged them over on depop before anyone else could! 🏃💨
 
+#ThriftFind #VintageLevis #DepopFinds
+
+$ AI201_CACHE=0 python -c "...same command..."
+Nothing beats the effortless vibe of broken-in denim paired with crisp white kicks for a sunny weekend coffee run. Snagged these classic vintage Levi's 501 jeans for just $38 and I'm honestly obsessed with how well they fit 👖✨. Finding timeless pieces like this on depop is literally my favorite hobby.
+
+#ThriftFind #VintageDenim #DepopStyle
+
+$ AI201_CACHE=0 python -c "...same command..."
+Scored these classic medium wash Levi's 501s on Depop for just $38, and they honestly fit like a dream. 👖✨ Threw them on with some beat-up white sneakers for that effortless, 90s-off-duty-model casual look. Grab them before I change my mind and keep them forever! 🤍
+
+#vintagelevis #depopfinds #9sstyle
 ```
+
+Run without `AI201_CACHE=0`, the same command printed the same caption word for
+word five times: the cache handed back the saved answer. With the cache off,
+every caption is different and each one names $38 and Depop.
 
 ---
 
