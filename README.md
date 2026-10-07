@@ -43,12 +43,14 @@
 
 FitFindr helps someone shop secondhand clothes. The user types a request like
 `'vintage graphic tee under $30'`, and the agent searches 40 thrift listings for
-the best match in a $10 price window around their budget, in their size. It returns the matched item (title,
-price, size and platform), an outfit that pairs the item with clothes the user
-already owns (or general styling tips if their wardrobe is empty), and a short
-caption they could post about the find. If nothing matches, the agent stops
-before the outfit step and tells the user what to change, such as changing the
-budget or using different words.
+the best match in a $10 price window around their budget, in their size. It
+returns the matched item (title, price, size and platform), an outfit that
+pairs the item with clothes the user already owns (or general styling tips if
+their wardrobe is empty), and a short caption they could post about the find.
+If the item exists but nothing fits the price, it shows the closest-priced
+alternatives and styles the cheapest. If nothing in the shop matches the words
+at all, it stops before the outfit step and tells the user what to change, such
+as using different words or dropping the size.
 
 
 ---
@@ -217,6 +219,42 @@ set and the later fields stay None.
   fallback instead of stopping. The cheapest shirt is $18, which sets a $15–25
   window, and the loop styled the cheapest shirt in it.
 - **Where it lives:** `agent.py::run_agent`, the `"fallback"` step.
+
+### Fourth tool: `check_owned`
+
+- **What it does:** Checks whether the user already owns something like the
+  selected item, so they don't buy a near-duplicate. Plain code, no model call.
+- **Inputs:** `new_item` (dict): the selected listing. `wardrobe` (dict): the
+  wardrobe with its `"items"` list.
+- **Returns:** A `list[dict]` of the wardrobe items that are "similar": same
+  `category` as the new item and at least one shared `style_tags` entry
+  (compared case-insensitively). The agent shows them as a heads-up, e.g.
+  "You already own something similar: Vintage black denim jacket".
+- **When it has nothing:** Returns an empty list `[]`, and the agent shows no
+  heads-up.
+- **When it runs:** on every run that selects an item, right after `select`
+  and before `suggest_outfit`. The result goes into `session["already_owned"]`.
+
+### Style memory: buy, return window, wardrobe
+
+- **What it does:** The agent remembers what the user bought between runs. A
+  bought item only joins the wardrobe once its return window has closed.
+- **How it works:**
+  1. `python app.py ask '...' --buy` records the selected item as a pending
+     purchase with today's date.
+  2. The return window is 14 days. At the start of every run, pending items
+     bought 14 or more days ago move into the wardrobe.
+  3. `python app.py keep <listing id>` closes the window early ("I'm keeping
+     it") and moves that item into the wardrobe straight away.
+  4. A listing moved into the wardrobe becomes a wardrobe item: its title as
+     `name`, plus its `category`, `colors` and `style_tags`.
+- **Where it's stored:** `data/my_wardrobe.json`, created from the example
+  wardrobe on the first purchase, with `"items"` and `"pending"` lists. Every
+  later run loads it instead of the example wardrobe. It is committed so the
+  memory is visible in the repo.
+- **How a later run is shaped by an earlier one:** after buying and keeping the
+  Denim Jacket, `suggest_outfit` can use it in outfits, and `check_owned` warns
+  when the search finds another jacket.
 
 ---
 
