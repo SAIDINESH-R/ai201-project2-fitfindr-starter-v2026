@@ -28,6 +28,10 @@ tool calls and returns a fit card — in at least 4 of 5 tries.
 <!-- Why 4 of 5 and not 5 of 5? Something about your search, probably —
      "my search is a plain keyword match and some phrasings will miss" is a
      real answer. -->
+My search is plain keyword matching, so a phrasing like "t-shirt" instead of
+"tee" can find nothing and stop the run before the other tools. On top of that,
+`suggest_outfit` and `create_fit_card` both call the model, and a model call can
+fail or come back odd, so one bad run in five is realistic.
 
 ---
 
@@ -39,10 +43,14 @@ Given a query that matches no listings, the agent stops before calling
 **Why this target:**
 <!-- Why is 5 of 5 reasonable here when criterion 1 isn't? What's different
      about this path? -->
+The stop only happens when no listing has a query word in its title at any
+price, and deciding to stop is a plain empty-list check in `run_agent`. No
+model call happens on this path, so unlike criterion 1 nothing can vary
+between runs, and it should stop all 5 times.
 
 ---
 
-## 3. Something about state
+## 3. The chosen item keeps its id through every tool
 
 <!-- YOU WRITE THIS ONE.
 
@@ -54,15 +62,23 @@ Given a query that matches no listings, the agent stops before calling
      compares session["selected_item"] against what actually reached
      suggest_outfit is the shape you're after. -->
 
+Run five queries that each match at least one listing. In each run, the `id`
+of `session["selected_item"]` is the same as the `id` of the item the loop
+chose from the search (the first result, or the cheapest in the fallback
+branch), and the item dict passed to `suggest_outfit` and to `create_fit_card`
+has that same `id` — 5 of 5 runs.
 
-
-**Why this target:**
-
+**Why this target:** Every listing has a unique `id`, like a bag tag at
+check-in. The loop saves the chosen item once in `session["selected_item"]`
+and both tools read it from there. No model call touches the item or its `id`,
+so passing it along is plain code and should never swap it. A mismatch would
+mean the outfit was made for a different item, which the caption alone
+wouldn't reveal.
 
 
 ---
 
-## 4. Something about the fit card
+## 4. The fit card names where to buy the item
 
 <!-- YOU WRITE THIS ONE.
 
@@ -75,15 +91,22 @@ Given a query that matches no listings, the agent stops before calling
      sentence? A card longer than a caption anyone would post? Any of those can
      be turned into a number. -->
 
+Call `create_fit_card('baggy jeans and white sneakers', item)` once for each of
+five listings covering all three platforms: `lst_006` (depop), `lst_003` and
+`lst_010` (thredUp), `lst_004` and `lst_011` (poshmark). A caption passes if it
+names that listing's own `platform` (case doesn't matter) — in at least 4 of 5
+captions.
 
-
-**Why this target:**
-
+**Why this target:** The platform is the one detail a caption can't do without:
+it tells the reader where to buy the item, and once they know that they can
+check the price themselves. It's 4 of 5 and not 5 of 5 because the caption
+comes from a model call at temperature 0.9, so even with the platform in the
+prompt the model can drop a detail now and then.
 
 
 ---
 
-## 5. Your choice
+## 5. Search results stay inside the budget's price window
 
 <!-- YOU WRITE THIS ONE TOO.
 
@@ -92,10 +115,26 @@ Given a query that matches no listings, the agent stops before calling
      search respects a price ceiling — anything, as long as it names a number
      or an observable outcome. -->
 
+Run `search_listings('vintage', max_price=B)` for five budgets: $22, $33, $38,
+$45 and $51. Each try passes only if it returns at least one listing and every
+returned price is inside that budget's window:
 
+| Budget | Window (inclusive) |
+|---|---|
+| $22 | $20–30 |
+| $33 | $30–40 |
+| $38 | $35–45 |
+| $45 | $40–50 |
+| $51 | $50–60 |
 
-**Why this target:**
+Target: 5 of 5 budgets.
 
+**Why this target:** When shopping, a user is happy with results a few dollars
+around their budget and doesn't mind spending $5–10 more for the right piece,
+so the search shows a $10 window instead of a hard ceiling. The target is 5 of
+5 because `search_listings` doesn't call the model: the window is plain math on
+the price, so the same budget gives the same result every time, and even one
+miss means the rule is coded wrong.
 
 
 ---
