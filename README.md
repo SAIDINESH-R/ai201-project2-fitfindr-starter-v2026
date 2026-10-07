@@ -157,7 +157,10 @@ the query had a price, search again with no price filter (second branch, see
 Stretch Features). If that finds no title match, or the query had no price, put a
 message in `session["error"]` that names what to change, based on the filters
 that were used (e.g. "try without size M", "try fewer or different words"), and
-stop without calling `suggest_outfit`.
+stop without calling `suggest_outfit`. One more stop, from style memory: if the
+top result is a listing the user already bought, stop with
+`session["bought_match"]` set so the app can ask whether to buy it again or
+look for something new.
 
 **Where it lives:** `agent.py::run_agent`
 
@@ -173,10 +176,10 @@ set and the later fields stay None.
 
 ---
 
-## Stretch Features (planned)
+## Stretch Features
 
-<!-- Declared before building, as the rubric requires. Each one gets a run log
-     here once it's built. -->
+<!-- Declared before building, as the rubric requires (see the commit
+     history). Each one has a run log below now that it's built. -->
 
 ### Second branch: over-budget alternatives
 
@@ -234,6 +237,20 @@ set and the later fields stay None.
   heads-up.
 - **When it runs:** on every run that selects an item, right after `select`
   and before `suggest_outfit`. The result goes into `session["already_owned"]`.
+- **Run log (the agent calling it):** the "Heads-up" line is `check_owned`'s
+  result. The example wardrobe has a "Vintage black denim jacket" (outerwear,
+  tags denim/vintage/classic), which matches the found jacket's category and
+  shares tags.
+
+  ```
+  $ python app.py ask 'denim jacket under $45' --buy
+
+    Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+
+    Heads-up: you already own something similar: Vintage black denim jacket
+  ```
+- **Where it lives:** `tools.py::check_owned`, called from the `"check_owned"`
+  step in `agent.py::run_agent`.
 
 ### Style memory: buy, return window, wardrobe
 
@@ -255,6 +272,57 @@ set and the later fields stay None.
 - **How a later run is shaped by an earlier one:** after buying and keeping the
   Denim Jacket, `suggest_outfit` can use it in outfits, and `check_owned` warns
   when the search finds another jacket.
+- **Added after building: already-bought items.** Thrift items are one of a
+  kind, so finding the exact item you already bought again made no sense. If
+  the top result is a listing the user bought (pending or kept), `run_agent`
+  stops before `suggest_outfit` and sets `session["bought_match"]`. `app.py`
+  then asks "Buy it again (b) or look for something new (n)?". `n` runs again
+  with `skip_bought=True`, which skips every bought listing. `b` runs again
+  normally. With no keyboard to ask (an evaluation run), it picks `n`.
+- **Run log: two runs, the second shaped by the first.**
+
+  Run 1 buys the jacket (the heads-up lists one similar item):
+
+  ```
+  $ python app.py ask 'denim jacket under $45' --buy
+
+    Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+
+    Heads-up: you already own something similar: Vintage black denim jacket
+    ...
+    Bought Denim Jacket — Light Wash, Cropped (lst_007). It joins your wardrobe when the return window closes on 2026-10-20, or now with: python app.py keep lst_007
+
+  $ python app.py keep lst_007
+
+    Kept Denim Jacket — Light Wash, Cropped. It's in your wardrobe now.
+  ```
+
+  Run 2 is the same query. It now recognises the purchase, asks, and on `n`
+  finds a different jacket. The heads-up lists the bought jacket as well,
+  because it's in the remembered wardrobe:
+
+  ```
+  $ python app.py ask 'denim jacket under $45'
+
+    You already bought Denim Jacket — Light Wash, Cropped ($42, lst_007).
+    Buy it again (b) or look for something new (n)? [n] n
+
+    Found:    90s Track Jacket — Navy/White Stripe — $45.0 on poshmark
+
+    Heads-up: you already own something similar: Vintage black denim jacket, Denim Jacket — Light Wash, Cropped
+
+    Outfit:   1. 90s Track Jacket — Navy/White Stripe + White ribbed tank top + Baggy straight-leg jeans, dark wash + Chunky white sneakers
+  2. 90s Track Jacket — Navy/White Stripe + White ribbed tank top + Wide-leg khaki trousers + Black combat boots + Black crossbody bag
+
+    Fit card: Just scored the ultimate vintage Champion track jacket on Poshmark for only $45 🧥✨ It gives off the best effortless 90s athletic vibe, whether I'm styling it super casually with baggy denim or mixing it up with khaki trousers and combat boots.
+
+  #ThriftFind #VintageStreetwear #PoshmarkStyle
+  ```
+
+  The remembered wardrobe is in `data/my_wardrobe.json`.
+- **Known limitation:** the track jacket counts as "similar" to the denim
+  jackets only because all three are tagged "vintage", which most listings
+  are. Matching on a rarer tag would make the heads-up more useful.
 
 ---
 
