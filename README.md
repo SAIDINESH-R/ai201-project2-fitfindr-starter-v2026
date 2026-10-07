@@ -157,10 +157,11 @@ the query had a price, search again with no price filter (second branch, see
 Stretch Features). If that finds no title match, or the query had no price, put a
 message in `session["error"]` that names what to change, based on the filters
 that were used (e.g. "try without size M", "try fewer or different words"), and
-stop without calling `suggest_outfit`. One more stop, from style memory: if the
-top result is a listing the user already bought, stop with
-`session["bought_match"]` set so the app can ask whether to buy it again or
-look for something new.
+stop without calling `suggest_outfit`. One more stop, from style memory, when
+the app passes `ask_if_owned=True`: if the top result is a listing the user
+already bought, or the same category in a colour they already own, stop with
+`session["owned_match"]` set so the app can ask whether to show it anyway or
+look for the same kind in other colours.
 
 **Where it lives:** `agent.py::run_agent`
 
@@ -272,13 +273,29 @@ set and the later fields stay None.
 - **How a later run is shaped by an earlier one:** after buying and keeping the
   Denim Jacket, `suggest_outfit` can use it in outfits, and `check_owned` warns
   when the search finds another jacket.
-- **Added after building: already-bought items.** Thrift items are one of a
-  kind, so finding the exact item you already bought again made no sense. If
-  the top result is a listing the user bought (pending or kept), `run_agent`
-  stops before `suggest_outfit` and sets `session["bought_match"]`. `app.py`
-  then asks "Buy it again (b) or look for something new (n)?". `n` runs again
-  with `skip_bought=True`, which skips every bought listing. `b` runs again
-  normally. With no keyboard to ask (an evaluation run), it picks `n`.
+- **Added after building: "you already own this kind".** Finding the exact
+  item you bought, or another black jacket when you already own one, isn't
+  much help. When `app.py` runs the agent it passes `ask_if_owned=True`. If the
+  top result is a listing the user bought (pending or kept), or is the same
+  category as a wardrobe item and shares a colour with it
+  (`tools.py::same_kind_and_colour`), `run_agent` stops before
+  `suggest_outfit` and sets `session["owned_match"]`. `app.py` then asks "Show
+  this one anyway (b) or <category> in other colours (n)?".
+  - `b` runs again normally and styles that item.
+  - `n` runs again with `skip_owned=True`: it searches every match (not just
+    the top 10), keeps only the same category as the item it asked about, and
+    drops bought listings and colours the user already owns in that category.
+    The price window still applies, and with no price it takes the best match.
+    If nothing of that kind in another colour fits the window, it searches
+    again with no price, picks the matching item priced closest to the
+    budget, and shows the $10 window around that one
+    (`agent.py::_something_new`). For example, `'black jacket under $75'` has
+    only the black Leather Bomber in $70–80, so `n` gives "No other colours
+    between $70 and $80. Showing outerwear closest to your budget ($40–$50):
+    90s Track Jacket — Navy/White Stripe ($45)".
+  - With no keyboard to ask, it picks `n`. `run_eval.py` calls
+    `run_agent(query, wardrobe)` without `ask_if_owned`, so evaluation runs
+    never stop to ask.
 - **Run log: two runs, the second shaped by the first.**
 
   Run 1 buys the jacket (the heads-up lists one similar item):
@@ -297,15 +314,16 @@ set and the later fields stay None.
     Kept Denim Jacket — Light Wash, Cropped. It's in your wardrobe now.
   ```
 
-  Run 2 is the same query. It now recognises the purchase, asks, and on `n`
-  finds a different jacket. The heads-up lists the bought jacket as well,
-  because it's in the remembered wardrobe:
+  Run 2 is a later search. It recognises that the user already owns a black
+  jacket, asks, and on `n` finds outerwear in another colour. The heads-up now
+  lists the jacket bought in run 1, because it's in the remembered wardrobe:
 
   ```
-  $ python app.py ask 'denim jacket under $45'
+  $ python app.py ask 'black jacket'
 
-    You already bought Denim Jacket — Light Wash, Cropped ($42, lst_007).
-    Buy it again (b) or look for something new (n)? [n] n
+    Found 90s Leather Bomber — Black ($75, lst_022).
+    You already own the same kind in this colour: Vintage black denim jacket
+    Show this one anyway (b) or outerwear in other colours (n)? [n] n
 
     Found:    90s Track Jacket — Navy/White Stripe — $45.0 on poshmark
 
@@ -323,6 +341,10 @@ set and the later fields stay None.
 - **Known limitation:** the track jacket counts as "similar" to the denim
   jackets only because all three are tagged "vintage", which most listings
   are. Matching on a rarer tag would make the heads-up more useful.
+- **Known limitation:** "same kind" comes from the top result's category, and
+  the keyword search treats a colour word like an item word. With
+  `'black jacket under $20'` no jacket fits $15–25, so the top result is a
+  black top that only matched "black", and the question asks about tops.
 
 ---
 

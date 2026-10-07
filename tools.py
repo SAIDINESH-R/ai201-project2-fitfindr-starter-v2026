@@ -56,6 +56,7 @@ def search_listings(
     size: str | None = None,
     max_price: float | None = None,
     min_price: float | None = None,
+    limit: int | None = config.SEARCH_RESULT_LIMIT,
 ) -> list[dict]:
     """
     Search the listings data for items matching a description, and optionally a
@@ -143,7 +144,8 @@ def search_listings(
 
     # Most title matches first, then most matches overall, then cheapest.
     scored.sort(key=lambda s: (-s[0], -s[1], s[2]))
-    return [s[3] for s in scored[: config.SEARCH_RESULT_LIMIT]]
+    # limit=None returns every match (the loop uses it to look past the top 10).
+    return [s[3] for s in scored[:limit]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -303,6 +305,19 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
 
 # ── Tool 4 (stretch): check_owned ─────────────────────────────────────────────
+
+def same_kind_and_colour(new_item: dict, wardrobe: dict) -> list[dict]:
+    """Wardrobe items in the same category as new_item that share a colour.
+    Owning a black jacket makes another black jacket a repeat."""
+    category = new_item["category"].lower()
+    colours = {c.lower() for c in new_item["colors"]}
+    return [
+        owned for owned in wardrobe.get("items") or []
+        if owned["category"].lower() == category
+        and colours & {c.lower() for c in owned["colors"]}
+    ]
+
+
 
 def check_owned(new_item: dict, wardrobe: dict) -> list[dict]:
     """

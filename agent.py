@@ -19,6 +19,7 @@ import config
 import trace
 from tools import (
     search_listings, suggest_outfit, create_fit_card, check_owned, price_window, _words,
+    same_kind_and_colour,
 )
 from generate import ModelUnavailable
 
@@ -119,8 +120,54 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "notice": None,              # set when the second branch (fallback) ran
         "alternatives": [],          # what the fallback showed instead
         "already_owned": [],         # similar wardrobe items, from check_owned
-        "bought_match": None,        # top result was already bought; app asks the user
+        "owned_match": None,         # top result repeats something owned; app asks the user
+        "owned_like": [],            # the wardrobe items it repeats (same kind + colour)
     }
+
+
+def _something_new(session: dict, results: list[dict], repeats) -> list[dict]:
+    """
+    The user said "show me something new": the same kind of item as the top
+    result (its category), minus anything that repeats what they own.
+
+    If nothing like that fits their price, take the one priced closest to their
+    budget and show the $10 window around it instead.
+    """
+    kind = results[0]["category"]
+    fresh = [r for r in results if r["category"] == kind and not repeats(r)]
+    p = session["parsed"]
+    if fresh or p["max_price"] is None:
+        return fresh[: config.SEARCH_RESULT_LIMIT]
+
+    if p["min_price"] is not None:
+        low, high = p["min_price"], p["max_price"]
+    else:
+        low, high = price_window(p["max_price"])
+
+    everything = search_listings(p["description"], size=p["size"], limit=None)
+    others = [r for r in everything if r["category"] == kind and not repeats(r)]
+    if not others:
+        return []
+
+    def gap(r):
+        if low <= r["price"] <= high:
+            return 0
+        return min(abs(r["price"] - low), abs(r["price"] - high))
+
+    closest = min(others, key=gap)
+    w_low, w_high = price_window(closest["price"])
+    inside = [closest] + [
+        r for r in others
+        if r is not closest and w_low <= r["price"] <= w_high
+    ]
+    inside = inside[: config.SEARCH_RESULT_LIMIT]
+    session["alternatives"] = inside
+    session["notice"] = (
+        f"No other colours between ${low:.0f} and ${high:.0f}. Showing {kind} "
+        f"closest to your budget (${w_low:.0f}–${w_high:.0f}): "
+        + ", ".join(f"{r['title']} (${r['price']:.0f})" for r in inside)
+    )
+    return inside
 
 
 # ── planning loop ─────────────────────────────────────────────────────────────
@@ -129,7 +176,8 @@ def run_agent(
     query: str,
     wardrobe: dict,
     bought_ids: set[str] | None = None,
-    skip_bought: bool = False,
+    ask_if_owned: bool = False,
+    skip_owned: bool = False,
 ) -> dict:
     """
     Run the loop once and return the finished session.
@@ -202,9 +250,12 @@ def run_agent(
 
         elif next_step == "search":
             p = session["parsed"]
+            # "Something new" needs every match, not just the top 10, so it can
+            # find the same kind of item in other colours.
             session["search_results"] = search_listings(
                 p["description"], size=p["size"],
                 max_price=p["max_price"], min_price=p["min_price"],
+                limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
             )
             # THE BRANCH.
             if session["search_results"]:
@@ -221,7 +272,10 @@ def run_agent(
             # cheapest of them.
             p = session["parsed"]
             query_words = set(p["description"].split())
-            no_price = search_listings(p["description"], size=p["size"])
+            no_price = search_listings(
+                p["description"], size=p["size"],
+                limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
+            )
             title_matches = [r for r in no_price if query_words & _words(r["title"])]
             if not title_matches:
                 session["error"] = _stop_message(p)
@@ -251,18 +305,24 @@ def run_agent(
             # the first is also the cheapest.
             results = session["search_results"]
             bought = bought_ids or set()
-            if skip_bought:
-                results = [r for r in results if r["id"] not in bought]
+
+            def repeats(item):
+                return item["id"] in bought or same_kind_and_colour(item, session["wardrobe"])
+
+            if skip_owned and results:
+                results = _something_new(session, results, repeats)
             if not results:
                 session["error"] = (
-                    "Everything that matched is something you already bought. "
-                    "Try different words."
+                    "Everything that matched is like something you already own. "
+                    "Try different words or another colour."
                 )
                 next_step = "done"
-            elif results[0]["id"] in bought:
-                # Style memory: they already bought this exact item. Stop and
-                # let the app ask whether to go ahead or look for something new.
-                session["bought_match"] = results[0]
+            elif ask_if_owned and repeats(results[0]):
+                # Style memory: the top result repeats something they own.
+                # Stop and let the app ask whether to go ahead or look for
+                # something new.
+                session["owned_match"] = results[0]
+                session["owned_like"] = same_kind_and_colour(results[0], session["wardrobe"])
                 next_step = "done"
             else:
                 session["selected_item"] = results[0]

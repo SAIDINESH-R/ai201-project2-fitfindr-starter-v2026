@@ -114,21 +114,31 @@ def _ask_one(query, wardrobe, use_trace):
     from utils.wardrobe_memory import bought_ids
 
     bought = bought_ids()
-    session = run_agent(query, wardrobe, bought_ids=bought)
+    session = run_agent(query, wardrobe, bought_ids=bought, ask_if_owned=True)
 
-    if session["bought_match"]:
-        # Style memory: the top result is something they already bought.
-        item = session["bought_match"]
-        print(f"\n  You already bought {item['title']} (${item['price']:.0f}, {item['id']}).")
+    if session["owned_match"]:
+        # Style memory: the top result repeats something they own.
+        item = session["owned_match"]
+        print(f"\n  Found {item['title']} (${item['price']:.0f}, {item['id']}).")
+        if item["id"] in bought:
+            print("  You already bought this exact item.")
+        # Leave out the item itself: once kept, a bought item is also in the
+        # wardrobe, and naming it twice reads like two different things.
+        others = [w for w in session["owned_like"] if w["id"] != f"w_{item['id']}"]
+        if others:
+            names = ", ".join(w["name"] for w in others)
+            print(f"  You already own the same kind in this colour: {names}")
         if sys.stdin.isatty():
-            answer = input("  Buy it again (b) or look for something new (n)? [n] ").strip().lower()
+            answer = input(
+                f"  Show this one anyway (b) or {item['category']} in other colours (n)? [n] "
+            ).strip().lower()
         else:
             answer = "n"   # nobody to ask, e.g. an evaluation run
             print("  Looking for something new.")
         if answer.startswith("b"):
             session = run_agent(query, wardrobe)
         else:
-            session = run_agent(query, wardrobe, bought_ids=bought, skip_bought=True)
+            session = run_agent(query, wardrobe, bought_ids=bought, skip_owned=True)
 
     print()
     if session["error"]:
