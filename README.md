@@ -196,6 +196,27 @@ set and the later fields stay None.
   pink shirt in the window still returns the other shirts in the window,
   because every query word counts on its own. `'shirt'` with no price returns
   the best matches first.
+- **Run log (branch taken):**
+
+  ```
+  $ python app.py ask 'pink shirt in 10$'
+
+    Nothing between $5 and $15. Showing 2 outside your price range ($15–$25): Vintage Polo Shirt — Forest Green ($18), Oversized Flannel Shirt — Plaid Red/Black ($22)
+
+    Found:    Vintage Polo Shirt — Forest Green — $18.0 on thredUp
+
+    Outfit:   1. Vintage Polo Shirt — Forest Green + Baggy straight-leg jeans, dark wash + Chunky white sneakers + Brown leather belt
+  2. Vintage Polo Shirt — Forest Green + Wide-leg khaki trousers + Black combat boots + Brown leather belt
+
+    Fit card: Scored this forest green Ralph Lauren polo on thredUp for just $18, and it’s giving major retro campus energy. I love dressing it down with baggy dark wash jeans and chunky sneakers, or leaning into the smart-casual look with khaki trousers and combat boots 🌲✨👞
+
+  #ThriftFind #VintageStyle #Menswear
+  ```
+
+  The $10 budget gives a $5–15 window with no shirts in it, so the loop took the
+  fallback instead of stopping. The cheapest shirt is $18, which sets a $15–25
+  window, and the loop styled the cheapest shirt in it.
+- **Where it lives:** `agent.py::run_agent`, the `"fallback"` step.
 
 ---
 
@@ -209,8 +230,28 @@ set and the later fields stay None.
 **One full query**
 
 ```
-$ python app.py ask '...'
+$ python app.py ask 'vintage graphic tee under $30'
 
+  Found:    Vintage Graphic Hoodie — Faded Black — $26.0 on depop
+
+  Outfit:   1. Vintage Graphic Hoodie — Faded Black + Baggy straight-leg jeans, dark wash + Black combat boots + Black crossbody bag
+2. Vintage Graphic Hoodie — Faded Black + Wide-leg khaki trousers + Brown leather belt + Chunky white sneakers + Black crossbody bag
+
+  Fit card: Scored this washed-out graphic hoodie on depop for just $26 🖤 and it’s giving the ultimate worn-in, grunge-chic energy. Whether you're pairing it with baggy denim and combat boots for an edgy day out or dressing it down with khaki trousers, it’s about to be my entire personality this season ☕✨.
+```
+
+The $30 budget sets a $25–35 window. The only graphic tees cost $18 and $24, so
+they fall below it, and the hoodie wins on "vintage" and "graphic" in its
+title.
+
+**A query that matches nothing**
+
+```
+$ python app.py ask 'tuxedo'
+
+  Nothing in the shop matches 'tuxedo' at any price. Try fewer or different words.
+
+0 model calls this session
 ```
 
 **The three tools, tested one at a time**

@@ -13,10 +13,80 @@ Build and test your three tools in `tools.py` first. Then come here.
     python agent.py          runs both example paths below
 """
 
+import re
+
 import config
 import trace
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import search_listings, suggest_outfit, create_fit_card, price_window, _words
 from generate import ModelUnavailable
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+_NUMBER = r"(\d+(?:\.\d+)?)"
+
+# Words that carry no meaning for the search. Without this, "a" and "for" would
+# match almost every description and every query would look like a hit.
+_FILLER = {
+    "a", "an", "the", "i", "im", "me", "my", "want", "need", "looking", "for",
+    "find", "show", "some", "something", "any", "in", "with", "and", "or", "of",
+    "under", "below", "less", "than", "up", "to", "max", "between", "around",
+    "size", "outfit", "outfits", "please", "cheap",
+}
+
+
+def parse_query(query: str) -> dict:
+    """
+    Pull description, size, min_price, max_price and num_outfits out of the
+    query with regex. Whatever is left after removing those phrases (and filler
+    words) is the description.
+    """
+    text = query.lower()
+    parsed = {"description": "", "size": None, "min_price": None,
+              "max_price": None, "num_outfits": 2}
+
+    # Custom range first: "between $20 and $40", "$20-$40", "$20 to $40".
+    match = (re.search(rf"between\s*\$?{_NUMBER}\s*(?:and|to|-)\s*\$?{_NUMBER}", text)
+             or re.search(rf"\${_NUMBER}\s*(?:-|to)\s*\$?{_NUMBER}", text))
+    if match:
+        parsed["min_price"], parsed["max_price"] = float(match[1]), float(match[2])
+        text = text.replace(match[0], " ")
+    else:
+        # A single budget: "$30", "30$", or "under 30".
+        match = (re.search(rf"\${_NUMBER}", text)
+                 or re.search(rf"{_NUMBER}\s*\$", text)
+                 or re.search(rf"(?:under|below|less than|up to|max)\s+{_NUMBER}", text))
+        if match:
+            parsed["max_price"] = float(match[1])
+            text = text.replace(match[0], " ")
+
+    match = re.search(r"\b(\d+)\s*outfits?\b", text)
+    if match:
+        parsed["num_outfits"] = max(1, min(5, int(match[1])))
+        text = text.replace(match[0], " ")
+
+    match = re.search(
+        r"\bsize\s+(us\s*\d+(?:\.\d+)?|w\d+(?:\s*l\d+)?|one size|xxs|xs|xxl|xl|s|m|l|\d+(?:\.\d+)?)\b",
+        text,
+    )
+    if match:
+        parsed["size"] = match[1].upper()
+        text = text.replace(match[0], " ")
+
+    # Same whole-word split as the search, but kept in the user's order.
+    words = [w for w in re.split(r"[^a-z0-9]+", text) if w and w not in _FILLER]
+    parsed["description"] = " ".join(dict.fromkeys(words))
+    return parsed
+
+
+def _stop_message(parsed: dict) -> str:
+    """Say what the user could change, based on the filters they used."""
+    tips = []
+    if parsed["size"]:
+        tips.append(f"try without size {parsed['size']}")
+    tips.append("try fewer or different words")
+    words = parsed["description"] or "(no keywords)"
+    return f"Nothing in the shop matches '{words}' at any price. " + ", or ".join(tips).capitalize() + "."
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -44,6 +114,8 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
+        "notice": None,              # set when the second branch (fallback) ran
+        "alternatives": [],          # what the fallback showed instead
     }
 
 
@@ -107,8 +179,85 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     """
     session = new_session(query, wardrobe)
 
-    # TODO: delete these two lines and build the loop.
-    session["error"] = "The planning loop isn't built yet — see the TODO in agent.py."
+    # Each pass runs one step, writes its result into the session, and picks
+    # the next step by reading the session back. The branch is in "search".
+    next_step = "parse"
+    count = 0
+    while next_step != "done":
+        count += 1
+        trace.check_iterations(count)
+
+        if next_step == "parse":
+            session["parsed"] = parse_query(session["query"])
+            next_step = "search"
+
+        elif next_step == "search":
+            p = session["parsed"]
+            session["search_results"] = search_listings(
+                p["description"], size=p["size"],
+                max_price=p["max_price"], min_price=p["min_price"],
+            )
+            # THE BRANCH.
+            if session["search_results"]:
+                next_step = "select"
+            elif p["max_price"] is not None:
+                next_step = "fallback"
+            else:
+                session["error"] = _stop_message(p)
+                next_step = "done"
+
+        elif next_step == "fallback":
+            # Second branch: nothing in the user's price range. Search again with
+            # no price, keep title matches, and put the $10 window around the
+            # cheapest of them.
+            p = session["parsed"]
+            query_words = set(p["description"].split())
+            no_price = search_listings(p["description"], size=p["size"])
+            title_matches = [r for r in no_price if query_words & _words(r["title"])]
+            if not title_matches:
+                session["error"] = _stop_message(p)
+                next_step = "done"
+            else:
+                cheapest = min(r["price"] for r in title_matches)
+                low, high = price_window(cheapest)
+                inside = sorted(
+                    (r for r in title_matches if low <= r["price"] <= high),
+                    key=lambda r: r["price"],
+                )[: config.SEARCH_RESULT_LIMIT]
+                session["search_results"] = inside
+                session["alternatives"] = inside
+                if p["min_price"] is not None:
+                    asked_low, asked_high = p["min_price"], p["max_price"]
+                else:
+                    asked_low, asked_high = price_window(p["max_price"])
+                session["notice"] = (
+                    f"Nothing between ${asked_low:.0f} and ${asked_high:.0f}. Showing {len(inside)} outside your price "
+                    f"range (${low:.0f}–${high:.0f}): "
+                    + ", ".join(f"{r['title']} (${r['price']:.0f})" for r in inside)
+                )
+                next_step = "select"
+
+        elif next_step == "select":
+            # The first result. In the fallback the list is sorted by price, so
+            # the first is also the cheapest.
+            session["selected_item"] = session["search_results"][0]
+            next_step = "outfit"
+
+        elif next_step == "outfit":
+            session["outfit_suggestion"] = suggest_outfit(
+                session["selected_item"],
+                session["wardrobe"],
+                session["parsed"]["num_outfits"],
+            )
+            next_step = "fit_card"
+
+        elif next_step == "fit_card":
+            session["fit_card"] = create_fit_card(
+                session["outfit_suggestion"],
+                session["selected_item"],
+            )
+            next_step = "done"
+
     return session
 
 
