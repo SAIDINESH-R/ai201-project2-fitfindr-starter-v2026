@@ -62,11 +62,13 @@ between runs, and it should stop all 5 times.
      compares session["selected_item"] against what actually reached
      suggest_outfit is the shape you're after. -->
 
-Run five queries that each match at least one listing. In each run, the `id`
-of `session["selected_item"]` is the same as the `id` of the item the loop
-chose from the search (the first result, or the cheapest in the fallback
-branch), and the item dict passed to `suggest_outfit` and to `create_fit_card`
-has that same `id` — 5 of 5 runs.
+Run five queries that each match at least one listing, with
+`session = run_agent(query, get_example_wardrobe())`. A run passes when both
+are true: `session["selected_item"]["id"]` equals
+`session["search_results"][0]["id"]` (the item the loop chose from the search),
+and both `session["passed_to"]["suggest_outfit"]` and
+`session["passed_to"]["create_fit_card"]` (the loop records the id it hands
+each tool) equal that same `id` — 5 of 5 runs.
 
 **Why this target:** Every listing has a unique `id`, like a bag tag at
 check-in. The loop saves the chosen item once in `session["selected_item"]`

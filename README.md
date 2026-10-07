@@ -13,10 +13,7 @@
 > python app.py ask 'vintage graphic tee under $30'
 > ```
 >
-> All three tools are stubs, so that last command will do nothing useful yet.
-> That's the starting position.
->
-> **The rest of this file is your submission.** Fill it in as you go.
+> That last command runs the full agent: search, outfit and fit card.
 
 ---
 
@@ -172,8 +169,13 @@ words left over after removing those phrases become `description`.
 
 **What moves through the session:** `query` → `parsed` (description, size,
 min_price, max_price, num_outfits) → `search_results` → `selected_item` (the first
-result) → `outfit_suggestion` → `fit_card`. If the search is empty, `error` is
-set and the later fields stay None.
+result) → `already_owned` (from `check_owned`) → `outfit_suggestion` →
+`fit_card`. Before each model tool is called, the loop records the id of the
+item it hands over in `passed_to`, so criterion 3 can compare it with
+`selected_item`. If the search is empty, `error` is set and the later fields stay
+None. The fallback branch also sets `notice` and `alternatives`, and the
+style-memory stop sets `owned_match` and `owned_like` instead of
+`selected_item`.
 
 ---
 
@@ -182,7 +184,7 @@ set and the later fields stay None.
 <!-- Declared before building, as the rubric requires (see the commit
      history). Each one has a run log below now that it's built. -->
 
-### Second branch: over-budget alternatives
+### Second branch: alternatives outside the price range
 
 - **Condition:** the search with the user's price returns nothing, but the same
   search with no price filter returns at least one listing with a query word in
@@ -360,17 +362,29 @@ set and the later fields stay None.
 ```
 $ python app.py ask 'vintage graphic tee under $30'
 
+  Found Vintage Graphic Hoodie — Faded Black ($26, lst_015).
+  You already own the same kind in this colour: Oversized grey crewneck sweatshirt, Black cropped zip hoodie
+  Show this one anyway (b) or tops in other colours (n)? [n] b
+
   Found:    Vintage Graphic Hoodie — Faded Black — $26.0 on depop
 
-  Outfit:   1. Vintage Graphic Hoodie — Faded Black + Baggy straight-leg jeans, dark wash + Black combat boots + Black crossbody bag
-2. Vintage Graphic Hoodie — Faded Black + Wide-leg khaki trousers + Brown leather belt + Chunky white sneakers + Black crossbody bag
+  Heads-up: you already own something similar: Black cropped zip hoodie
 
-  Fit card: Scored this washed-out graphic hoodie on depop for just $26 🖤 and it’s giving the ultimate worn-in, grunge-chic energy. Whether you're pairing it with baggy denim and combat boots for an edgy day out or dressing it down with khaki trousers, it’s about to be my entire personality this season ☕✨.
+  Outfit:   1. Vintage Graphic Hoodie — Faded Black + Baggy straight-leg jeans, dark wash + Black combat boots + Black crossbody bag
+2. Vintage Graphic Hoodie — Faded Black + Wide-leg khaki trousers + Chunky white sneakers + Brown leather belt
+
+  Fit card: Scored this perfectly faded graphic hoodie on depop for just $26, and I'm obsessed with the worn-in grunge look. 🖤 Throw it on with baggy dark denim and combat boots for an effortless 90s vibe, or dress it up with khaki trousers for that cool thrifted contrast. ✨ It's seriously the ultimate cozy staple for everyday styling.
+
+#thriftfinds #depop #streetwear
+
+2 model calls this session, 570 prompt + 141 output tokens
 ```
 
 The $30 budget sets a $25–35 window. The only graphic tees cost $18 and $24, so
 they fall below it, and the hoodie wins on "vintage" and "graphic" in its
-title.
+title. The hoodie is black and charcoal, and the wardrobe already has tops in
+both colours, so the style-memory question came first. Answering `b` styles it
+anyway.
 
 **A query that matches nothing**
 
@@ -432,6 +446,14 @@ every caption is different and each one names $38 and Depop.
      "I gave Claude my search_listings spec. It returned None on no match
      instead of an empty list, so I changed it" is the level we want. -->
 
+**How I worked overall:** I made every design decision myself (the price
+window, the size and keyword rules, the outfit count, what the fit card must
+contain, and each criterion's check, target and reason) by answering Claude's
+questions, often multiple-choice. Claude turned my choices into the spec and
+criteria wording, wrote the code from my spec, and explained each part before
+I ran every test command myself. The moments below are where that back and
+forth changed the design.
+
 **Moment 1: the size trap**
 
 - *What I asked for:* I asked Claude to explain the size warning in
@@ -477,6 +499,20 @@ every caption is different and each one names $38 and Depop.
   every time, each still naming $38 and Depop. I left the cache on for
   building, since it saves quota, and I use `AI201_CACHE=0` when I need real
   variation.
+
+**Moment 5: the model copied the prompt's details**
+
+- *What I asked for:* `suggest_outfit` lists the wardrobe in the prompt as
+  "name (category; colors: ...)" and asked for pieces "named exactly as
+  written".
+- *What came back:* Once the wardrobe changed, the outfits started repeating
+  the brackets: "Baggy straight-leg jeans, dark wash (bottoms; colors: dark
+  blue, indigo), Black combat boots (shoes; colors: black)…". The earlier
+  clean output had been luck.
+- *What I changed:* I told the model to write only the piece names joined with
+  " + ", starting with the new item, and to leave out the details in brackets.
+  The next outfits came back as "Vintage Graphic Hoodie — Faded Black + Baggy
+  straight-leg jeans, dark wash + Black combat boots + Black crossbody bag".
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 

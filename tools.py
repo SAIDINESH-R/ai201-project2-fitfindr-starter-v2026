@@ -212,7 +212,10 @@ def suggest_outfit(new_item: dict, wardrobe: dict, num_outfits: int = 2) -> str:
             f"item. Use only pieces from the list above, named exactly as written. "
             f"Never invent a piece they don't own.\n"
             f"Reply with exactly {num_outfits} numbered lines (1. 2. ...), one "
-            f"outfit per line, and nothing else."
+            f"outfit per line, and nothing else. On each line write only the "
+            f"piece names joined with ' + ', starting with the new item, e.g. "
+            f"'1. {new_item['title']} + <piece name> + <piece name>'. Leave out "
+            f"the details in brackets."
         )
         note = ""
     else:

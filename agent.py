@@ -122,6 +122,7 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "already_owned": [],         # similar wardrobe items, from check_owned
         "owned_match": None,         # top result repeats something owned; app asks the user
         "owned_like": [],            # the wardrobe items it repeats (same kind + colour)
+        "passed_to": {},             # tool name -> id of the item it was handed
     }
 
 
@@ -336,6 +337,7 @@ def run_agent(
             next_step = "outfit"
 
         elif next_step == "outfit":
+            session["passed_to"]["suggest_outfit"] = session["selected_item"]["id"]
             session["outfit_suggestion"] = suggest_outfit(
                 session["selected_item"],
                 session["wardrobe"],
@@ -344,6 +346,7 @@ def run_agent(
             next_step = "fit_card"
 
         elif next_step == "fit_card":
+            session["passed_to"]["create_fit_card"] = session["selected_item"]["id"]
             session["fit_card"] = create_fit_card(
                 session["outfit_suggestion"],
                 session["selected_item"],
