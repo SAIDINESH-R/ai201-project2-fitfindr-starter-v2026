@@ -304,17 +304,51 @@ every caption is different and each one names $38 and Depop.
      "I gave Claude my search_listings spec. It returned None on no match
      instead of an empty list, so I changed it" is the level we want. -->
 
-**Moment 1**
+**Moment 1: the size trap**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* I asked Claude to explain the size warning in
+  `tools.py`, because I thought `L` matching `XL` was a lowercase problem.
+- *What came back:* It wasn't about case. Python's `in` matches part of a
+  word, so `"l" in "xl (oversized)"` and `"l" in "w30 l30"` are both True, and a
+  search for size L would return an XL flannel and a pair of jeans.
+- *What I changed:* I wrote a whole-piece size rule into my Tool Inventory
+  before writing any code: split the size on `/`, spaces and brackets and
+  compare whole pieces, so `L` matches `L`, `M/L` and `L/XL` but not `XL` or
+  `W30 L30`. `search_listings` follows that rule, and size L now returns only
+  `L` and `M/L`.
 
-**Moment 2**
+**Moment 2: shirt vs sweatshirt**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* I asked Claude whether my search design made sense.
+- *What came back:* It pointed out that the same substring problem hits
+  keywords too: the data has an "Oversized Crewneck Sweatshirt", and
+  `"shirt" in "sweatshirt"` is True, so a search for "shirt" would return
+  sweatshirts.
+- *What I changed:* I changed the keyword rule in my spec to whole words
+  (split on anything that isn't a letter or digit). Now `'shirt'` returns the
+  Polo Shirt and Flannel Shirt but no Sweatshirt. The cost is that plurals
+  don't match ("tees" won't find "tee"), which I noted in criterion 1.
+
+**Moment 3: a vague prompt**
+
+- *What I asked for:* My first `create_fit_card` prompt asked the model to
+  "use a few emojis", as my spec promised.
+- *What came back:* Three captions in a row with no emojis at all.
+- *What I changed:* I made the instruction specific, "Include 2 or 3 emojis in
+  the sentences", and the next captions had them (🎸 👟✨).
+
+**Moment 4: identical fit cards**
+
+- *What I asked for:* I ran the same `create_fit_card` command five times, as
+  the milestone asked, and asked Claude why all five captions were word for
+  word the same.
+- *What came back:* It wasn't the temperature (0.9 in `config.py`). It was
+  `CACHE_ENABLED`: after the first call, the adapter handed back the saved
+  answer for the identical prompt.
+- *What I changed:* I re-ran with `AI201_CACHE=0` and got a different caption
+  every time, each still naming $38 and Depop. I left the cache on for
+  building, since it saves quota, and I use `AI201_CACHE=0` when I need real
+  variation.
 
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
