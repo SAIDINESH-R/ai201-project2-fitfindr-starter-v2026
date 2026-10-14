@@ -18,7 +18,7 @@ import re
 import config
 import trace
 from tools import (
-    suggest_outfit, create_fit_card, check_owned, price_window, _words,
+    suggest_outfit, create_fit_card, price_window, _words,
     same_kind_and_colour,
 )
 from mcp_client import call_tool, MCPError
@@ -92,10 +92,12 @@ def parse_query(query: str) -> dict:
     return parsed
 
 
-def _stop_message(parsed: dict) -> str:
+def _stop_message(parsed: dict, size_dropped: bool = False) -> str:
     """Say what the user could change, based on the filters they used."""
     tips = []
-    if parsed["size"]:
+    # Once the loop has already retried without the size, suggesting it again
+    # would send the user to try something that just failed.
+    if parsed["size"] and not size_dropped:
         tips.append(f"try without size {parsed['size']}")
     tips.append("try fewer or different words")
     words = parsed["description"] or "(no keywords)"
@@ -127,6 +129,7 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "outfit_suggestion": None,   # what suggest_outfit returned
         "fit_card": None,            # what create_fit_card returned
         "error": None,               # set when the run ended early
+        "dropped": None,             # constraint the retry dropped, e.g. "size M"
         "notice": None,              # set when the second branch (fallback) ran
         "alternatives": [],          # what the fallback showed instead
         "already_owned": [],         # similar wardrobe items, from check_owned
@@ -155,6 +158,14 @@ def search_listings(description, size=None, max_price=None, min_price=None,
         "min_price": min_price,
         "limit": limit,
     })
+
+
+def check_owned(new_item, wardrobe):
+    """
+    check_owned, reached through the MCP server (unit 4 stretch: a second tool
+    on MCP). Same inputs and return value as tools.check_owned.
+    """
+    return call_tool("check_owned", {"new_item": new_item, "wardrobe": wardrobe})
 
 
 def _something_new(session: dict, results: list[dict], repeats) -> list[dict]:
@@ -295,6 +306,9 @@ def run_agent(
                 if session["search_results"]:
                     next_step = "select"
                     note = "branch: results found → select"
+                elif p["size"] and session["dropped"] is None:
+                    next_step = "retry_without_size"
+                    note = f"branch: empty in size {p['size']} → retry once without the size"
                 elif p["max_price"] is not None:
                     next_step = "fallback"
                     note = "branch: empty, but the query had a price → fallback"
@@ -309,26 +323,61 @@ def run_agent(
                     note=note,
                 )
 
+            elif next_step == "retry_without_size":
+                # Unit 4 stretch: the search was empty and the query had a size.
+                # Loosen one constraint, the size, and search once more with
+                # everything else the same.
+                p = session["parsed"]
+                session["dropped"] = f"size {p['size']}"
+                retried = search_listings(
+                    p["description"], size=None,
+                    max_price=p["max_price"], min_price=p["min_price"],
+                    limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
+                )
+                if retried:
+                    session["search_results"] = retried
+                    session["notice"] = (
+                        f"Nothing in size {p['size']}, so I dropped the size and "
+                        f"searched all sizes."
+                    )
+                    next_step = "select"
+                    note = f"retry: dropped size {p['size']} → results found → select"
+                elif p["max_price"] is not None:
+                    next_step = "fallback"
+                    note = f"retry: dropped size {p['size']} → still empty → price fallback"
+                else:
+                    session["error"] = _stop_message(p, size_dropped=True)
+                    next_step = "done"
+                    note = f"retry: dropped size {p['size']} → still empty → stop"
+                trace.step(
+                    "search_listings (via MCP)",
+                    inputs=_fmt({"description": p["description"], "size": None,
+                                 "min_price": p["min_price"], "max_price": p["max_price"]}),
+                    returned=retried,
+                    note=note,
+                )
+
             elif next_step == "fallback":
                 # Second branch: nothing in the user's price range. Search again with
                 # no price, keep title matches, and put the $10 window around the
                 # cheapest of them.
                 p = session["parsed"]
+                size = None if session["dropped"] else p["size"]
                 query_words = set(p["description"].split())
                 no_price = search_listings(
-                    p["description"], size=p["size"],
+                    p["description"], size=size,
                     limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
                 )
                 title_matches = [r for r in no_price if query_words & _words(r["title"])]
                 trace.step(
                     "search_listings (via MCP)",
-                    inputs=_fmt({"description": p["description"], "size": p["size"], "price": "none (fallback)"}),
+                    inputs=_fmt({"description": p["description"], "size": size, "price": "none (fallback)"}),
                     returned=title_matches,
                     note=("fallback: no title match at any price → stop" if not title_matches
                           else "fallback: title matches found → window around the cheapest"),
                 )
                 if not title_matches:
-                    session["error"] = _stop_message(p)
+                    session["error"] = _stop_message(p, size_dropped=bool(session["dropped"]))
                     next_step = "done"
                 else:
                     cheapest = min(r["price"] for r in title_matches)
@@ -387,7 +436,7 @@ def run_agent(
                     session["wardrobe"],
                 )
                 trace.step(
-                    "check_owned",
+                    "check_owned (via MCP)",
                     inputs=session["selected_item"],
                     returned=[w["name"] for w in session["already_owned"]],
                 )

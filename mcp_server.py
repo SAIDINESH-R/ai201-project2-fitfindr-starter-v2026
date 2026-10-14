@@ -60,6 +60,7 @@ works with a direct call, and **a documented failure earns the point in full.**
 from mcp.server.fastmcp import FastMCP
 
 from tools import search_listings as _search_listings_impl  # noqa: F401 — you'll use this below
+from tools import check_owned as _check_owned_impl
 
 # log_level="WARNING" keeps the server from printing an INFO line for every
 # request. Without it your terminal fills with "Processing request of type
@@ -94,6 +95,26 @@ def search_listings(
     return _search_listings_impl(
         description, size=size, max_price=max_price, min_price=min_price, limit=limit,
     )
+
+
+# ── check_owned, served over MCP (unit 4 stretch: a second tool) ─────────────
+
+@mcp.tool()
+def check_owned(new_item: dict, wardrobe: dict) -> list[dict]:
+    """
+    Check whether someone already owns clothes similar to an item they're
+    considering, so they don't buy a near-duplicate.
+
+    `new_item` is one listing object as returned by search_listings (it needs
+    `category` and `style_tags`). `wardrobe` is an object with an "items" list;
+    each item needs `category` and `style_tags` (and usually `name`). The list
+    may be empty.
+
+    Returns the wardrobe items that are similar: same category as new_item and
+    at least one shared style tag (case-insensitive). Returns an empty list []
+    when nothing is similar or the wardrobe is empty, never an error.
+    """
+    return _check_owned_impl(new_item, wardrobe)
 
 # ──────────────────────────────────────────────────────────────────────────────
 #
