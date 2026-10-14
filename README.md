@@ -75,6 +75,9 @@ as using different words or dropping the size.
   range, or None to skip the price filter.
   `min_price` (float or None, default None): the bottom of a custom range, or
   None when the user gave a single budget.
+  `limit` (int or None, default 10): the most results to return, or None for
+  every match. The loop passes None only when looking for "something new" in
+  other colours, so it can look past the top 10.
   - *Price rule:* if both `min_price` and `max_price` are given, keep listings
     priced from `min_price` to `max_price`, inclusive. If only `max_price` is
     given, it is a single budget and sets a $10 window, inclusive at both ends:
@@ -90,8 +93,8 @@ as using different words or dropping the size.
     digit. Each query word that appears as a whole word in the listing counts
     as one match, so `"shirt"` matches "Flannel Shirt" but not "Sweatshirt".
     Listings with zero matches are dropped.
-- **Returns:** A `list[dict]` of at most 10 listing dicts
-  (`config.SEARCH_RESULT_LIMIT`). Each dict is the full listing: `id`, `title`,
+- **Returns:** A `list[dict]` of at most `limit` listing dicts (10 by default,
+  `config.SEARCH_RESULT_LIMIT`). Each dict is the full listing: `id`, `title`,
   `description`, `category`, `style_tags`, `size`, `condition`, `price` (float),
   `colors`, `brand` (str or None) and `platform`. Results are ordered by the
   number of keywords found in the title (most first), then by total keyword
@@ -521,6 +524,35 @@ forth changed the design.
 
 ---
 
+## Unit 4 Stretch Features (planned)
+
+<!-- Declared before building, as the rubric requires. Each gets its evidence
+     here once built. -->
+
+### A second tool on MCP: `check_owned`
+
+`search_listings` moves onto MCP first (the required tool). `check_owned` will
+be registered on the same server, with the same inputs and return value as in
+the Unit 3 Stretch Features, and `run_agent` will call it through
+`mcp_client.call_tool`. Evidence: a loop trace with both MCP calls visible.
+
+### Retry with looser constraints: drop the size
+
+If `search_listings` returns an empty list and the query had a size, the loop
+retries the search once with `size=None`, records which constraint was dropped
+(in the session and the trace, e.g. "retry: dropped size M"), and continues
+with those results. If the retry is also empty, the existing price fallback
+and stop rules apply as before. Evidence: a run log showing the retry and the
+dropped constraint.
+
+### A second measured improvement
+
+After the first improvement, a second change chosen from the diagnosis, run
+with `python run_eval.py` and logged as a third run log in the same table
+format, with a statement of whether it helped.
+
+---
+
 ## Run Log — Before
 
 <!-- Five criteria, five tries each, in this exact format.
@@ -609,6 +641,25 @@ that produced it:
 behaved differently afterwards. If the rewire didn't work, say exactly where it
 broke — the error text and the last thing that worked. That earns the point in
 full. -->
+
+`search_listings` is registered in `mcp_server.py` with all five inputs from
+the Tool Inventory (`description`, `size`, `max_price`, `min_price`, `limit`)
+and a description written for an agent that can't see the code. Its most
+important line says `max_price` is not a ceiling but a $10 window. The server
+wraps the real function from `tools.py` and has no search logic of its own.
+`python mcp_client.py` lists the tool with those five inputs.
+
+In `agent.py`, the direct import of `search_listings` is replaced by a
+same-named function that calls `call_tool("search_listings", {...})`, so all
+three searches in the loop (the normal search, the price fallback and
+"something new") now go through the server.
+
+Nothing behaved differently. I compared the direct call and the MCP call on
+seven searches (a budget window, a custom range, a size, `limit=None`, and the
+empty `'tuxedo'`), and all seven came back identical, including `[]` for no
+match and `brand: None` surviving the trip as JSON null. `'pink shirt in 10$'`
+still takes the fallback and styles the $18 polo. The one cost is speed: each
+call starts the server, adding about half a second per search.
 
 
 

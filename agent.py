@@ -18,9 +18,10 @@ import re
 import config
 import trace
 from tools import (
-    search_listings, suggest_outfit, create_fit_card, check_owned, price_window, _words,
+    suggest_outfit, create_fit_card, check_owned, price_window, _words,
     same_kind_and_colour,
 )
+from mcp_client import call_tool
 from generate import ModelUnavailable
 
 
@@ -124,6 +125,22 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "owned_like": [],            # the wardrobe items it repeats (same kind + colour)
         "passed_to": {},             # tool name -> id of the item it was handed
     }
+
+
+def search_listings(description, size=None, max_price=None, min_price=None,
+                    limit=config.SEARCH_RESULT_LIMIT):
+    """
+    search_listings, reached through the MCP server instead of a direct call.
+    Same inputs and same return value as tools.search_listings — only the
+    route changes.
+    """
+    return call_tool("search_listings", {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+        "min_price": min_price,
+        "limit": limit,
+    })
 
 
 def _something_new(session: dict, results: list[dict], repeats) -> list[dict]:
