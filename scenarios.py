@@ -69,6 +69,18 @@ SCENARIOS = [
         "criterion": 5,
     },
     {
+        # Unit 4 second improvement: does the top search result have the item
+        # word (the last word typed) in its title? One colour + item query per
+        # category. Search only, no model calls. Diagnostic, not one of the
+        # five criteria.
+        "name": "top result is the item asked for",
+        "query": "(five colour + item queries, one per try)",
+        "kind": "top_result",
+        "queries": ["black boots", "grey tee", "blue jeans", "black jacket", "brown belt"],
+        "wardrobe": "example",
+        "criterion": None,
+    },
+    {
         # A user with nothing saved. One of unit 4's three failure modes.
         "name": "empty wardrobe",
         "query": "denim jacket under $50",

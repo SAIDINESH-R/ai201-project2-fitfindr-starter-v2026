@@ -87,6 +87,19 @@ def _search_session(scenario, attempt):
             "outfit_suggestion": None, "fit_card": None}
 
 
+def _top_result_session(query):
+    """The second improvement's check: search_listings(query), and the first
+    result becomes selected_item so the report shows its title."""
+    from agent import search_listings
+    import trace as trace_module
+
+    results = search_listings(query)
+    trace_module.step("search_listings (via MCP)", inputs=f"description={query!r}",
+                      returned=results)
+    return {"error": None, "selected_item": results[0] if results else None,
+            "search_results": results, "outfit_suggestion": None, "fit_card": None}
+
+
 def run_once(scenario, use_trace=True, attempt=1):
     """One scenario, one try. Returns everything worth recording."""
     from agent import run_agent
@@ -107,6 +120,8 @@ def run_once(scenario, use_trace=True, attempt=1):
             record["session"] = _fit_card_session(scenario, what)
         elif scenario.get("kind") == "search":
             record["session"] = _search_session(scenario, attempt)
+        elif scenario.get("kind") == "top_result":
+            record["session"] = _top_result_session(what)
         else:
             record["session"] = run_agent(what, wardrobe)
     except Exception as exc:  # noqa: BLE001 — a crash is a result worth logging
@@ -124,7 +139,13 @@ def main():
     parser.add_argument("--tries", "--trials", type=int, default=5, dest="tries",
                         help="tries per scenario (default 5, matching your criteria)")
     parser.add_argument("--label", default="", help="a name for this run, e.g. 'before'")
+    parser.add_argument("--only", default="",
+                        help="run only scenarios whose name contains this text")
     args = parser.parse_args()
+    if args.only:
+        scenario_module.SCENARIOS[:] = [
+            s for s in scenario_module.SCENARIOS if args.only in s["name"]
+        ]
 
     problems = scenario_module.validate()
     if problems:

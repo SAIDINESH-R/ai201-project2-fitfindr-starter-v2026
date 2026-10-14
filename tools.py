@@ -107,6 +107,10 @@ def search_listings(
     query_words = _words(description)
     if not query_words:
         return []
+    # The item word is the last word typed: "boots" in "black boots". Unit 4's
+    # second improvement ranks listings with it in the title first, so a colour
+    # or style word alone ("black") can't outrank the thing asked for.
+    item_word = [w for w in re.split(r"[^a-z0-9]+", description.lower()) if w][-1]
 
     # Price: a custom range if both ends are given, the $10 window for a single
     # budget, nothing at all if there's no price.
@@ -140,12 +144,14 @@ def search_listings(
         if total_hits == 0:
             continue
 
-        scored.append((title_hits, total_hits, price, listing))
+        has_item = item_word in title_words
+        scored.append((has_item, title_hits, total_hits, price, listing))
 
-    # Most title matches first, then most matches overall, then cheapest.
-    scored.sort(key=lambda s: (-s[0], -s[1], s[2]))
+    # Item word in the title first, then most title matches, then most matches
+    # overall, then cheapest.
+    scored.sort(key=lambda s: (not s[0], -s[1], -s[2], s[3]))
     # limit=None returns every match (the loop uses it to look past the top 10).
-    return [s[3] for s in scored[:limit]]
+    return [s[4] for s in scored[:limit]]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
