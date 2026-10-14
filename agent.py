@@ -21,7 +21,7 @@ from tools import (
     suggest_outfit, create_fit_card, check_owned, price_window, _words,
     same_kind_and_colour,
 )
-from mcp_client import call_tool
+from mcp_client import call_tool, MCPError
 from generate import ModelUnavailable
 
 
@@ -125,6 +125,11 @@ def new_session(query: str, wardrobe: dict) -> dict:
         "owned_like": [],            # the wardrobe items it repeats (same kind + colour)
         "passed_to": {},             # tool name -> id of the item it was handed
     }
+
+
+def _fmt(values: dict) -> str:
+    """Readable key=value text for the trace (trace.py shortens raw dicts)."""
+    return ", ".join(f"{k}={v!r}" for k, v in values.items() if v is not None)
 
 
 def search_listings(description, size=None, max_price=None, min_price=None,
@@ -262,112 +267,174 @@ def run_agent(
         count += 1
         trace.check_iterations(count)
 
-        if next_step == "parse":
-            session["parsed"] = parse_query(session["query"])
-            next_step = "search"
+        try:
+            if next_step == "parse":
+                session["parsed"] = parse_query(session["query"])
+                trace.step("parse_query", inputs=session["query"], returned=_fmt(session["parsed"]))
+                next_step = "search"
 
-        elif next_step == "search":
-            p = session["parsed"]
-            # "Something new" needs every match, not just the top 10, so it can
-            # find the same kind of item in other colours.
-            session["search_results"] = search_listings(
-                p["description"], size=p["size"],
-                max_price=p["max_price"], min_price=p["min_price"],
-                limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
-            )
-            # THE BRANCH.
-            if session["search_results"]:
-                next_step = "select"
-            elif p["max_price"] is not None:
-                next_step = "fallback"
-            else:
-                session["error"] = _stop_message(p)
-                next_step = "done"
-
-        elif next_step == "fallback":
-            # Second branch: nothing in the user's price range. Search again with
-            # no price, keep title matches, and put the $10 window around the
-            # cheapest of them.
-            p = session["parsed"]
-            query_words = set(p["description"].split())
-            no_price = search_listings(
-                p["description"], size=p["size"],
-                limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
-            )
-            title_matches = [r for r in no_price if query_words & _words(r["title"])]
-            if not title_matches:
-                session["error"] = _stop_message(p)
-                next_step = "done"
-            else:
-                cheapest = min(r["price"] for r in title_matches)
-                low, high = price_window(cheapest)
-                inside = sorted(
-                    (r for r in title_matches if low <= r["price"] <= high),
-                    key=lambda r: r["price"],
-                )[: config.SEARCH_RESULT_LIMIT]
-                session["search_results"] = inside
-                session["alternatives"] = inside
-                if p["min_price"] is not None:
-                    asked_low, asked_high = p["min_price"], p["max_price"]
+            elif next_step == "search":
+                p = session["parsed"]
+                # "Something new" needs every match, not just the top 10, so it can
+                # find the same kind of item in other colours.
+                session["search_results"] = search_listings(
+                    p["description"], size=p["size"],
+                    max_price=p["max_price"], min_price=p["min_price"],
+                    limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
+                )
+                # THE BRANCH.
+                if session["search_results"]:
+                    next_step = "select"
+                    note = "branch: results found → select"
+                elif p["max_price"] is not None:
+                    next_step = "fallback"
+                    note = "branch: empty, but the query had a price → fallback"
                 else:
-                    asked_low, asked_high = price_window(p["max_price"])
-                session["notice"] = (
-                    f"Nothing between ${asked_low:.0f} and ${asked_high:.0f}. Showing {len(inside)} outside your price "
-                    f"range (${low:.0f}–${high:.0f}): "
-                    + ", ".join(f"{r['title']} (${r['price']:.0f})" for r in inside)
+                    session["error"] = _stop_message(p)
+                    next_step = "done"
+                    note = "branch: empty → stop before suggest_outfit"
+                trace.step(
+                    "search_listings (via MCP)",
+                    inputs=_fmt({k: v for k, v in p.items() if k != "num_outfits"}),
+                    returned=session["search_results"],
+                    note=note,
                 )
-                next_step = "select"
 
-        elif next_step == "select":
-            # The first result. In the fallback the list is sorted by price, so
-            # the first is also the cheapest.
-            results = session["search_results"]
-            bought = bought_ids or set()
+            elif next_step == "fallback":
+                # Second branch: nothing in the user's price range. Search again with
+                # no price, keep title matches, and put the $10 window around the
+                # cheapest of them.
+                p = session["parsed"]
+                query_words = set(p["description"].split())
+                no_price = search_listings(
+                    p["description"], size=p["size"],
+                    limit=None if skip_owned else config.SEARCH_RESULT_LIMIT,
+                )
+                title_matches = [r for r in no_price if query_words & _words(r["title"])]
+                trace.step(
+                    "search_listings (via MCP)",
+                    inputs=_fmt({"description": p["description"], "size": p["size"], "price": "none (fallback)"}),
+                    returned=title_matches,
+                    note=("fallback: no title match at any price → stop" if not title_matches
+                          else "fallback: title matches found → window around the cheapest"),
+                )
+                if not title_matches:
+                    session["error"] = _stop_message(p)
+                    next_step = "done"
+                else:
+                    cheapest = min(r["price"] for r in title_matches)
+                    low, high = price_window(cheapest)
+                    inside = sorted(
+                        (r for r in title_matches if low <= r["price"] <= high),
+                        key=lambda r: r["price"],
+                    )[: config.SEARCH_RESULT_LIMIT]
+                    session["search_results"] = inside
+                    session["alternatives"] = inside
+                    if p["min_price"] is not None:
+                        asked_low, asked_high = p["min_price"], p["max_price"]
+                    else:
+                        asked_low, asked_high = price_window(p["max_price"])
+                    session["notice"] = (
+                        f"Nothing between ${asked_low:.0f} and ${asked_high:.0f}. Showing {len(inside)} outside your price "
+                        f"range (${low:.0f}–${high:.0f}): "
+                        + ", ".join(f"{r['title']} (${r['price']:.0f})" for r in inside)
+                    )
+                    next_step = "select"
 
-            def repeats(item):
-                return item["id"] in bought or same_kind_and_colour(item, session["wardrobe"])
+            elif next_step == "select":
+                # The first result. In the fallback the list is sorted by price, so
+                # the first is also the cheapest.
+                results = session["search_results"]
+                bought = bought_ids or set()
 
-            if skip_owned and results:
-                results = _something_new(session, results, repeats)
-            if not results:
-                session["error"] = (
-                    "Everything that matched is like something you already own. "
-                    "Try different words or another colour."
+                def repeats(item):
+                    return item["id"] in bought or same_kind_and_colour(item, session["wardrobe"])
+
+                if skip_owned and results:
+                    results = _something_new(session, results, repeats)
+                if not results:
+                    session["error"] = (
+                        "Everything that matched is like something you already own. "
+                        "Try different words or another colour."
+                    )
+                    next_step = "done"
+                elif ask_if_owned and repeats(results[0]):
+                    # Style memory: the top result repeats something they own.
+                    # Stop and let the app ask whether to go ahead or look for
+                    # something new.
+                    session["owned_match"] = results[0]
+                    session["owned_like"] = same_kind_and_colour(results[0], session["wardrobe"])
+                    next_step = "done"
+                    trace.step("select", returned=results[0],
+                               note="already own this kind and colour → stop and ask the user")
+                else:
+                    session["selected_item"] = results[0]
+                    next_step = "check_owned"
+                    trace.step("select", returned=results[0], note="first result → selected_item")
+
+            elif next_step == "check_owned":
+                session["already_owned"] = check_owned(
+                    session["selected_item"],
+                    session["wardrobe"],
+                )
+                trace.step(
+                    "check_owned",
+                    inputs=session["selected_item"],
+                    returned=[w["name"] for w in session["already_owned"]],
+                )
+                next_step = "outfit"
+
+            elif next_step == "outfit":
+                session["passed_to"]["suggest_outfit"] = session["selected_item"]["id"]
+                session["outfit_suggestion"] = suggest_outfit(
+                    session["selected_item"],
+                    session["wardrobe"],
+                    session["parsed"]["num_outfits"],
+                )
+                trace.step(
+                    "suggest_outfit",
+                    inputs=_fmt({"item": session["selected_item"]["title"],
+                                 "wardrobe_items": len(session["wardrobe"].get("items") or []),
+                                 "num_outfits": session["parsed"]["num_outfits"]}),
+                    returned=session["outfit_suggestion"],
+                )
+                next_step = "fit_card"
+
+            elif next_step == "fit_card":
+                session["passed_to"]["create_fit_card"] = session["selected_item"]["id"]
+                session["fit_card"] = create_fit_card(
+                    session["outfit_suggestion"],
+                    session["selected_item"],
+                )
+                trace.step(
+                    "create_fit_card",
+                    inputs=_fmt({"item": session["selected_item"]["title"], "outfit": "(from suggest_outfit)"}),
+                    returned=session["fit_card"],
+                    note="done",
                 )
                 next_step = "done"
-            elif ask_if_owned and repeats(results[0]):
-                # Style memory: the top result repeats something they own.
-                # Stop and let the app ask whether to go ahead or look for
-                # something new.
-                session["owned_match"] = results[0]
-                session["owned_like"] = same_kind_and_colour(results[0], session["wardrobe"])
-                next_step = "done"
-            else:
-                session["selected_item"] = results[0]
-                next_step = "check_owned"
-
-        elif next_step == "check_owned":
-            session["already_owned"] = check_owned(
-                session["selected_item"],
-                session["wardrobe"],
+        except ModelUnavailable as exc:
+            # The model couldn't be reached. Keep what already worked (the
+            # search and the chosen item) and say what broke and what to do.
+            found = session["selected_item"]
+            kept = f" The search still worked: {found['title']} (${found['price']:.0f})." if found else ""
+            # Drop the raw provider payload ("{'error': {...}}") and keep the
+            # sentence a person can read.
+            reason = str(exc).split(" {")[0].rstrip(".") + "."
+            # Waiting fixes a busy model, not a bad key; generate.py's key
+            # message already says what to do.
+            advice = "" if "api key" in reason.lower() else " The model may be busy. Try again in a minute."
+            session["error"] = f"{reason}{kept}{advice}"
+            trace.step(next_step, note="model unavailable → stop with a message")
+            next_step = "done"
+        except MCPError as exc:
+            # The search server (mcp_server.py) couldn't be reached.
+            first_line = str(exc).splitlines()[0]
+            session["error"] = (
+                f"{first_line} The search runs on the MCP server, so nothing "
+                f"could be searched. Run `python mcp_server.py` to see why it fails."
             )
-            next_step = "outfit"
-
-        elif next_step == "outfit":
-            session["passed_to"]["suggest_outfit"] = session["selected_item"]["id"]
-            session["outfit_suggestion"] = suggest_outfit(
-                session["selected_item"],
-                session["wardrobe"],
-                session["parsed"]["num_outfits"],
-            )
-            next_step = "fit_card"
-
-        elif next_step == "fit_card":
-            session["passed_to"]["create_fit_card"] = session["selected_item"]["id"]
-            session["fit_card"] = create_fit_card(
-                session["outfit_suggestion"],
-                session["selected_item"],
-            )
+            trace.step(next_step, note="MCP server unreachable → stop with a message")
             next_step = "done"
 
     return session

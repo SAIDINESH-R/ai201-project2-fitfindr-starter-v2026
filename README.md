@@ -628,14 +628,91 @@ that produced it:
 **Happy path**
 
 ```
-
+$ python app.py ask 'denim jacket under $50' --trace
+[1] parse_query
+      in:  denim jacket under $50
+      out: description='denim jacket', max_price=50.0, num_outfits=2
+[2] search_listings (via MCP)
+      in:  description='denim jacket', max_price=50.0
+      out: 1 items: 90s Track Jacket — Navy/White Stripe
+      →    branch: results found → select
+[3] select
+      out: 90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+      →    first result → selected_item
+[4] check_owned
+      in:  90s Track Jacket — Navy/White Stripe ($45.0, poshmark)
+      out: 2 items: Vintage black denim jacket…
+[5] suggest_outfit
+      in:  item='90s Track Jacket — Navy/White Stripe', wardrobe_items=11, num_outfits=2
+      out: 1. 90s Track Jacket — Navy/White Stripe + White ribbed tank top + Baggy straight-leg jeans, dark wash + Chunky…
+[6] create_fit_card
+      in:  item='90s Track Jacket — Navy/White Stripe', outfit='(from suggest_outfit)'
+      out: Scored this vintage Champion navy and white track jacket on Poshmark for just $45, and the retro athletic vibe…
+      →    done
 ```
 
 **Empty search**
 
 ```
+$ python app.py ask 'tuxedo' --trace
+[1] parse_query
+      in:  tuxedo
+      out: description='tuxedo', num_outfits=2
+[2] search_listings (via MCP)
+      in:  description='tuxedo'
+      out: [] (empty)
+      →    branch: empty → stop before suggest_outfit
 
+  Nothing in the shop matches 'tuxedo' at any price. Try fewer or different words.
+
+0 model calls this session
 ```
+
+The empty search stops after 2 steps and the happy path runs 6, so the branch
+is doing its job. Step 2 is the MCP call in both. The $50 budget sets a $45–55
+window, which is why the $42 Denim Jacket isn't in the happy path.
+
+**The three failure modes, triggered on purpose**
+
+1. *Empty search* (`'tuxedo'`, above): stops before `suggest_outfit` with
+   "Nothing in the shop matches 'tuxedo' at any price. Try fewer or different
+   words." 0 model calls.
+2. *Empty wardrobe* (`python app.py ask 'striped polo shirt' --empty-wardrobe`):
+   no crash and no empty string.
+
+   ```
+     Found:    Vintage Polo Shirt — Forest Green — $18.0 on thredUp
+
+     Outfit:   Your wardrobe is empty, so these use everyday basics:
+   1. Pair the forest green polo with straight-leg light wash jeans, white canvas sneakers, and a simple leather belt for a classic casual look.
+   2. Layer the polo unbuttoned over a plain white t-shirt, paired with relaxed black trousers and retro low-profile sneakers for an earth-toned casual outfit.
+   ```
+3. *Model unavailable.* Before the fix, this escaped the loop:
+   `ModelUnavailable: Couldn't reach the model: 503 UNAVAILABLE. {'error': ...}`.
+   It was caught only by `app.py`'s catch-all, and the item the search had
+   already found was thrown away. I added a handler in `agent.py::run_agent`
+   that catches `ModelUnavailable` (and `MCPError` for the search server),
+   keeps the found item, and says what broke and what to do. With one
+   character of the key changed:
+
+   ```
+   $ python app.py ask 'olive shacket' --trace
+   [1] parse_query ...
+   [2] search_listings (via MCP)
+         out: 2 items: Shacket — Olive Canvas, Straight Leg Khaki Trousers — Olive
+         →    branch: results found → select
+   [3] select ...
+   [4] check_owned ...
+   [5] outfit
+         →    model unavailable → stop with a message
+
+     The model rejected your API key. Check GEMINI_API_KEY in your .env file, or create a fresh key at aistudio.google.com. The search still worked: Shacket — Olive Canvas ($33). Try again in a minute.
+   ```
+
+   The service also had a real outage (503, "high demand") during testing,
+   and the same handler caught it. After that run I removed "Try again in a
+   minute" from the bad-key message (waiting doesn't fix a key) and trimmed
+   the raw `{'error': ...}` payload out of the 503 message.
 
 **On the MCP move:** <!-- what changed in your code, and whether anything
 behaved differently afterwards. If the rewire didn't work, say exactly where it
