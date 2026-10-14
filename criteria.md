@@ -33,6 +33,19 @@ My search is plain keyword matching, so a phrasing like "t-shirt" instead of
 `suggest_outfit` and `create_fit_card` both call the model, and a model call can
 fail or come back odd, so one bad run in five is realistic.
 
+> **Revised in unit 4:** Given `'vintage graphic tee under $30'`, the agent
+> completes all three tool calls, returns a fit card, and the selected item's
+> title contains the query's item word, the last word of the parsed
+> description (`tee`), as a whole word — in at least 4 of 5 tries.
+>
+> **Why revised:** the original measured the wrong thing. In the before run
+> it passed 5 of 5 while every try selected the "Vintage Graphic Hoodie": a
+> user asking for a tee got a hoodie and the criterion still counted it as
+> working, because it only checked that a fit card came back. The revision
+> keeps the original check and adds one that can be scored from
+> `session["selected_item"]["title"]`. The target stays 4 of 5 for the same
+> reason as before (two model calls that can fail).
+
 ---
 
 ## 2. An impossible query stops before the second tool

@@ -564,19 +564,95 @@ format, with a statement of whether it helped.
      `python run_eval.py --label before` runs everything and writes the table
      into results/. Paste it here and fill in the verdicts. -->
 
+Run with `python run_eval.py --label before` (5 tries per scenario, caching
+off, 45 model calls). Full log: `results/run_2026-10-14_0246_before.md`.
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 1. (revised in unit 4) …and the selected item is a tee | 4 of 5 | FAIL | FAIL | FAIL | FAIL | FAIL | MISSED (0/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The chosen item keeps its id through every tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. The fit card names where to buy the item | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 5. Search results stay inside the budget's price window | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Real output from one try**, pasted as text, naming the file and function
-that produced it:
+What each try ran, and how PASS was decided:
+
+1. `'vintage graphic tee under $30'` five times. PASS = not stopped early and
+   `fit_card` is set.
+2. `'designer ballgown size XXS under $5'` five times. PASS = stopped before
+   `suggest_outfit` (`fit_card` is None) with a message naming what to change.
+3. One query per try: `'vintage graphic tee under $30'`, `'pink shirt in 10$'`
+   (takes the price fallback), `'denim jacket under $50'`,
+   `'90s track jacket in size M'`, `'silk slip dress under $40'`. PASS =
+   `selected_item` id, `search_results[0]` id and both `passed_to` ids are
+   the same.
+4. `create_fit_card('baggy jeans and white sneakers', item)` for `lst_006`
+   (depop), `lst_003` and `lst_010` (thredUp), `lst_004` and `lst_011`
+   (poshmark). PASS = the caption names that listing's platform (case
+   ignored).
+5. `'vintage under $B'` for B = 22, 33, 38, 45, 51, which parses to
+   `search_listings('vintage', max_price=B)`. PASS = at least one result and
+   every price inside the window ($20–30, $30–40, $35–45, $40–50, $50–60).
+
+`run_eval.py` runs `agent.py::run_agent` for every scenario except criterion
+4, which calls `tools.py::create_fit_card` directly (`run_eval.py::run_once`
+was extended so a scenario can list one input per try).
+
+**Real output from one try per criterion**, from
+`results/run_2026-10-14_0246_before.md`, produced by `run_eval.py::main`
+running `agent.py::run_agent`:
+
+Criterion 1, try 1 (`agent.py::run_agent`):
 
 ```
+- stopped early: no
+- selected_item: Vintage Graphic Hoodie — Faded Black ($26.0, depop)
+- search_results: 9
 
+Fit card:
+Scored this perfectly broken-in faded black graphic hoodie for just $26 on depop 🖤. The wash gives it that ultimate grunge look whether you're throwing it on with baggy denim or dressing it up with structured khaki trousers. It’s giving effortless 90s streetwear without even trying 🛹✨.
+
+#thrifted #streetwear #depopfinds
+```
+
+Criterion 2, try 1 (`agent.py::run_agent`, the fallback then the stop):
+
+```
+[2] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', max_price=5.0
+      out: [] (empty)
+      →    branch: empty, but the query had a price → fallback
+[3] search_listings (via MCP)
+      in:  description='designer ballgown', size='XXS', price='none (fallback)'
+      out: [] (empty)
+      →    fallback: no title match at any price → stop
+- stopped early: yes — Nothing in the shop matches 'designer ballgown' at any price. Try without size xxs, or try fewer or different words.
+```
+
+Criterion 3, try 2 (`agent.py::run_agent`, through the fallback):
+
+```
+- Input: `pink shirt in 10$`
+- selected_item id: lst_024, platform: thredUp
+- search_results[0] id: lst_024
+- passed_to: {'suggest_outfit': 'lst_024', 'create_fit_card': 'lst_024'}
+```
+
+Criterion 4, try 4 (`tools.py::create_fit_card`, platform poshmark):
+
+```
+Scored this vintage Champion 90s track jacket and I'm obsessed with how it looks paired with baggy jeans and fresh white sneakers. 👟 It’s giving major retro athletic energy and honestly completes any casual streetwear fit effortlessly. ✨ Snagged this gem for just $45 over on Poshmark before anyone else could grab it.
+
+#ThriftFind #VintageStreetwear #PoshmarkStyle
+```
+
+Criterion 5, try 5 (`agent.py::run_agent`, budget $51 → window $50–60):
+
+```
+- Input: `vintage under $51`
+- selected_item id: lst_036, platform: depop
+- search_results prices: [52.0]
 ```
 
 ---
@@ -601,14 +677,66 @@ that produced it:
 
 | # | Criterion | Target | Verdict | How I decided |
 |---|---|---|---|---|
-| 1 |  |  |  |  |
-| 2 |  |  |  |  |
-| 3 |  |  |  |  |
-| 4 |  |  |  |  |
-| 5 |  |  |  |  |
+| 1 | A matching query completes all three tools (original) | 4 of 5 | MET (5/5) | All five tries ended with `error` None and a fit card set. |
+| 1 | Revised: …and the selected item's title contains the item word (`tee`) | 4 of 5 | MISSED (0/5) | Scored from the same before run: all five selected "Vintage Graphic Hoodie — Faded Black", which has no "tee" in its title. |
+| 2 | An impossible query stops before the second tool | 5 of 5 | MET (5/5) | All five stopped with `fit_card` None and a message naming what to change ("Try without size xxs, or try fewer or different words"). |
+| 3 | The chosen item keeps its id through every tool | 5 of 5 | MET (5/5) | In all five, `selected_item`, `search_results[0]` and both `passed_to` entries had the same id, including try 2, which went through the price fallback. |
+| 4 | The fit card names where to buy the item | 4 of 5 | MET (5/5) | All five captions contained their listing's platform. Try 4 named Poshmark only in its last sentence, which still counts. |
+| 5 | Search results stay inside the budget's price window | 5 of 5 | MET (5/5) | Every price in every try was inside its window, and each try returned at least one listing (the $51 try returned one, at $52). |
 
 **Diagnoses**
 
+**The one miss: revised criterion 1 (0 of 5).**
+
+- *Place:* a tool, `search_listings` (`tools.py`), in the price filter, not
+  the ranking.
+- *Mechanism:* a budget of $30 sets the $10 window $25–35 (round up to the
+  next 5, subtract 5). The shop has three tees (Baby Tee $18, Band Tee $19,
+  Graphic Tee $24), and all three are below $25, so the filter removes them
+  before anything is scored. Of what's left in $25–35, "Vintage Graphic Hoodie"
+  has two query words in its title ("vintage", "graphic") and wins the
+  ranking. The ranking itself works: the same search with no price returns
+  the Band Tee and the Graphic Tee as the top two. The window's bottom edge
+  is the problem. A user who says "under $30" means anything up to $30, and
+  my rule throws away everything cheaper than $25, the exact items they'd be
+  happiest with.
+- *Why no other criterion caught it:* criterion 5 checks that results stay
+  inside the window, so it passes precisely because the window is applied.
+  The window rule and criterion 5 agree with each other; the rule just
+  doesn't match what "under" means.
+
+**A pattern in the other observations.** The same run showed the keyword
+search treating every query word as equal: the Low-Rise Cargo Pants match
+"tee" only because their description says "a long tee", and in earlier
+manual runs `'black boots'` returned black biker shorts because the shop has
+no boots and "black" alone was enough. That's the same mechanism in the
+ranking step: an item word ("tee", "boots") counts no more than a colour or
+style word. It didn't cause the miss above, but it's the next thing I'd fix.
+
+One smaller finding from the run log: the stop message prints "size xxs" in
+lowercase. `agent.py::_stop_message` builds the tips and then calls
+`.capitalize()` on the whole string, which lowercases everything after the
+first letter. The message still names what to change, so criterion 2 passes,
+but the size reads wrong.
+
+**Targets that were set too low.** Criteria 1 and 4 targeted 4 of 5 and
+both scored 5 of 5.
+
+- *Criterion 4 → 5 of 5.* I allowed one slip because the caption comes from
+  the model at temperature 0.9, but the prompt names the platform outright
+  ("Mention the item, the price ($24) and the platform (depop) once each"),
+  and in the before run and every manual run in unit 3 it never left it out.
+  5 of 5 is the honest target.
+- *Criterion 1 (original) → 5 of 5 for completion.* The 4 of 5 was there for
+  model outages, and those are real: two 503 "high demand" errors happened
+  during manual testing. But since the unit 4 handler, an outage ends the run
+  with a clear message instead of a crash, so "completes" could fairly be
+  required 5 of 5 on a run with no outage, with outages reported separately.
+
+**Revision.** Criterion 1 is revised in `criteria.md` with the original line
+left in place. It's revised because it measured the wrong thing (it passed
+while the user got a hoodie for a tee), not because it was missed. The
+original was met 5 of 5.
 
 
 ---
