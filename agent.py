@@ -56,13 +56,22 @@ def parse_query(query: str) -> dict:
         parsed["min_price"], parsed["max_price"] = float(match[1]), float(match[2])
         text = text.replace(match[0], " ")
     else:
-        # A single budget: "$30", "30$", or "under 30".
-        match = (re.search(rf"\${_NUMBER}", text)
-                 or re.search(rf"{_NUMBER}\s*\$", text)
-                 or re.search(rf"(?:under|below|less than|up to|max)\s+{_NUMBER}", text))
+        # "under $30" is a ceiling: anything from $0 to $30. Unit 4's
+        # improvement — the $10 window threw away every tee under $25 for
+        # "vintage graphic tee under $30". (Passed as a $0–30 custom range.)
+        match = re.search(
+            rf"(?:under|below|less than|up to|max)\s*\$?\s*{_NUMBER}\s*\$?", text
+        )
         if match:
-            parsed["max_price"] = float(match[1])
+            parsed["min_price"], parsed["max_price"] = 0.0, float(match[1])
             text = text.replace(match[0], " ")
+        else:
+            # A bare budget, "$30" or "30$" ("a shirt in 10$"), keeps the $10
+            # window around it.
+            match = re.search(rf"\${_NUMBER}", text) or re.search(rf"{_NUMBER}\s*\$", text)
+            if match:
+                parsed["max_price"] = float(match[1])
+                text = text.replace(match[0], " ")
 
     match = re.search(r"\b(\d+)\s*outfits?\b", text)
     if match:

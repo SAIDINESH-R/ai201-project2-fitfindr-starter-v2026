@@ -37,7 +37,57 @@ import config
 import scenarios as scenario_module
 
 
-def run_once(scenario, use_trace=True):
+def _input_for(scenario, attempt):
+    """What this try runs: the scenario's query, the attempt-th entry of its
+    "queries" list, or the attempt-th listing id for a fit_card scenario."""
+    if scenario.get("kind") == "fit_card":
+        ids = scenario["listing_ids"]
+        return ids[(attempt - 1) % len(ids)]
+    if scenario.get("kind") == "search":
+        budgets = scenario["budgets"]
+        return f"{scenario['description']}, max_price={budgets[(attempt - 1) % len(budgets)]}"
+    queries = scenario.get("queries")
+    if queries:
+        return queries[(attempt - 1) % len(queries)]
+    return scenario["query"]
+
+
+def _fit_card_session(scenario, listing_id):
+    """Criterion 4 as written: create_fit_card(outfit, item), called directly."""
+    from tools import create_fit_card
+    from utils.data_loader import load_listings
+    import trace as trace_module
+
+    item = next(l for l in load_listings() if l["id"] == listing_id)
+    card = create_fit_card(scenario["outfit"], item)
+    trace_module.step(
+        "create_fit_card",
+        inputs=f"outfit={scenario['outfit']!r}, item={item['id']} ({item['platform']})",
+        returned=card,
+    )
+    return {"error": None, "selected_item": item, "search_results": [],
+            "outfit_suggestion": scenario["outfit"], "fit_card": card}
+
+
+def _search_session(scenario, attempt):
+    """Criterion 5 as written: search_listings(description, max_price=B),
+    called through the same MCP route the agent uses."""
+    from agent import search_listings
+    import trace as trace_module
+
+    budgets = scenario["budgets"]
+    budget = budgets[(attempt - 1) % len(budgets)]
+    results = search_listings(scenario["description"], max_price=budget)
+    trace_module.step(
+        "search_listings (via MCP)",
+        inputs=f"description={scenario['description']!r}, max_price={budget}",
+        returned=results,
+    )
+    return {"error": None, "selected_item": None, "search_results": results,
+            "outfit_suggestion": None, "fit_card": None}
+
+
+def run_once(scenario, use_trace=True, attempt=1):
     """One scenario, one try. Returns everything worth recording."""
     from agent import run_agent
     from utils.data_loader import get_example_wardrobe, get_empty_wardrobe
@@ -50,9 +100,15 @@ def run_once(scenario, use_trace=True):
     if use_trace:
         trace_module.start_trace()
 
-    record = {"error": None, "session": None, "trace": "", "crashed": None}
+    what = _input_for(scenario, attempt)
+    record = {"error": None, "session": None, "trace": "", "crashed": None, "input": what}
     try:
-        record["session"] = run_agent(scenario["query"], wardrobe)
+        if scenario.get("kind") == "fit_card":
+            record["session"] = _fit_card_session(scenario, what)
+        elif scenario.get("kind") == "search":
+            record["session"] = _search_session(scenario, attempt)
+        else:
+            record["session"] = run_agent(what, wardrobe)
     except Exception as exc:  # noqa: BLE001 — a crash is a result worth logging
         record["crashed"] = f"{type(exc).__name__}: {exc}"
         record["traceback"] = traceback.format_exc()
@@ -95,7 +151,7 @@ def main():
 
         tries = []
         for attempt in range(1, args.tries + 1):
-            record = run_once(scenario)
+            record = run_once(scenario, attempt=attempt)
             tries.append(record)
 
             if record["crashed"]:
@@ -179,6 +235,8 @@ def write_report(rows, args):
         for i, record in enumerate(row["tries"], 1):
             lines.append(f"**Try {i}**")
             lines.append("")
+            if record.get("input") != scenario["query"]:
+                lines += [f"- Input: `{record.get('input')}`"]
 
             if record["crashed"]:
                 lines += ["Crashed:", "", "```", record["crashed"], "```", ""]
@@ -191,6 +249,14 @@ def write_report(rows, args):
                 f"- selected_item: {item.get('title', '(none)')}"
                 + (f" (${item.get('price')}, {item.get('platform')})" if item else ""),
                 f"- search_results: {len(session.get('search_results') or [])}",
+                # Evidence the criteria check: ids for state (criterion 3),
+                # prices for the price window (criterion 5), the platform for
+                # the fit card (criterion 4).
+                f"- selected_item id: {item.get('id', '(none)')}"
+                + (f", platform: {item.get('platform')}" if item else ""),
+                f"- search_results[0] id: {(session.get('search_results') or [{}])[0].get('id', '(none)')}",
+                f"- search_results prices: {[r.get('price') for r in (session.get('search_results') or [])]}",
+                f"- passed_to: {session.get('passed_to', {})}",
                 "",
             ]
             if session.get("outfit_suggestion"):

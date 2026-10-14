@@ -40,7 +40,8 @@
 
 FitFindr helps someone shop secondhand clothes. The user types a request like
 `'vintage graphic tee under $30'`, and the agent searches 40 thrift listings for
-the best match in a $10 price window around their budget, in their size. It
+the best match within their budget ("under $30" means up to $30; a bare "$30"
+means a $10 window around it), in their size. It
 returns the matched item (title, price, size and platform), an outfit that
 pairs the item with clothes the user already owns (or general styling tips if
 their wardrobe is empty), and a short caption they could post about the find.
@@ -165,7 +166,10 @@ look for the same kind in other colours.
 
 **Where it lives:** `agent.py::run_agent`
 
-**How the query is parsed:** Regex. `under $30` becomes `max_price = 30.0`.
+**How the query is parsed:** Regex. `under $30` (or below, less than, up to,
+max) is a ceiling and becomes `min_price = 0.0`, `max_price = 30.0`, changed
+in unit 4 (see The Improvement). A bare budget, `$30` or `in 30$`, becomes
+`max_price = 30.0`, which `search_listings` turns into the $10 window.
 `between $20 and $40` or `$20-$40` becomes `min_price = 20.0` and
 `max_price = 40.0`. `size M` becomes `size = "M"`, and `3 outfits` becomes `num_outfits = 3`. The
 words left over after removing those phrases become `description`.
@@ -797,8 +801,10 @@ $ python app.py ask 'tuxedo' --trace
 ```
 
 The empty search stops after 2 steps and the happy path runs 6, so the branch
-is doing its job. Step 2 is the MCP call in both. The $50 budget sets a $45–55
-window, which is why the $42 Denim Jacket isn't in the happy path.
+is doing its job. Step 2 is the MCP call in both. This trace was recorded
+before the improvement: the $50 budget then set a $45–55 window, which is why
+the $42 Denim Jacket isn't in it. Since "under" became a ceiling, the same
+query selects the Denim Jacket (see The Improvement).
 
 **The three failure modes, triggered on purpose**
 
@@ -877,24 +883,75 @@ call starts the server, adding about half a second per search.
 
      `python run_eval.py --label after` -->
 
-**What I changed:**
+**What I changed:** One thing, in `agent.py::parse_query`. "under $30" (or
+below, less than, up to, max) is now read as a ceiling and passed to
+`search_listings` as the range $0–30 (`min_price=0.0, max_price=30.0`). A bare
+budget, "$30" or "in 30$", is unchanged: it still becomes `max_price` alone, so
+`search_listings` still applies the $10 window. `search_listings` and the
+window rule itself are not touched.
 
-**Which failure it was meant to fix:**
+**Which failure it was meant to fix:** revised criterion 1, MISSED 0/5. The
+diagnosis found that "under $30" became the window $25–35, which filtered out
+all three tees ($18, $19, $24) before ranking, so a hoodie won. The ranking
+was fine: with no price the tees came first. The fault was in what "under"
+was turned into, and the parser is where that happens.
+
+One test change came with it, and it doesn't change the agent: criterion 5
+says "run `search_listings('vintage', max_price=B)`". The before run reached
+that through `'vintage under $B'` queries, which used to parse to exactly that
+call. After the change they wouldn't (they'd become $0–B ranges), so the
+criterion 5 scenario now makes the call the criterion names, directly
+(`scenarios.py`, `"kind": "search"`). The prices it returned are identical to
+the before run.
 
 ### Run Log — After
 
+Run with `python run_eval.py --label after` (5 tries per scenario, caching
+off, 35 model calls). Full log: `results/run_2026-10-14_0302_after.md`.
+
 | Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
 |---|---|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |  |  |
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 1. (revised in unit 4) …and the selected item is a tee | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The chosen item keeps its id through every tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. The fit card names where to buy the item | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 5. Search results stay inside the budget's price window | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
 
-**Did it help, and how do I know:**
+Real output, criterion 1 try 1 (`agent.py::run_agent`, from
+`results/run_2026-10-14_0302_after.md`):
 
-<!-- If it made things worse, say that. Honestly reported, that earns full
-     credit and is more interesting than one that worked. -->
+```
+[1] parse_query
+      in:  vintage graphic tee under $30
+      out: description='vintage graphic tee', min_price=0.0, max_price=30.0, num_outfits=2
+[2] search_listings (via MCP)
+      in:  description='vintage graphic tee', min_price=0.0, max_price=30.0
+      out: 10 items: Vintage Band Tee — Faded Grey, Graphic Tee — 2003 Tour Bootleg Style, Vintage Graphic Hoodie — Faded Black … +7 more
+      →    branch: results found → select
+[3] select
+      out: Vintage Band Tee — Faded Grey ($19.0, depop)
+      →    first result → selected_item
+```
+
+**Did it help, and how do I know:** Yes. Revised criterion 1 went from 0 of 5
+to 5 of 5. In the before log every try selected "Vintage Graphic Hoodie —
+Faded Black" ($26). In the after log every try selected "Vintage Band Tee —
+Faded Grey" ($19), and the Graphic Tee ($24) is second. The other four
+criteria stayed at 5 of 5, so nothing regressed. Criterion 5's prices are the
+same list for all five budgets, which shows the window rule still works
+wherever it's still used.
+
+Two other paths changed in criterion 3's runs, both for the better and both
+still passing: `'denim jacket under $50'` now selects the Denim Jacket ($42)
+instead of the Track Jacket, and `'silk slip dress under $40'` now finds the
+Silk Slip Dress ($30) directly instead of falling back to a Silk Button-Down.
+The fallback is still exercised by `'pink shirt in 10$'` (a bare budget).
+
+The trade-off: the window existed so a user would also see things a few
+dollars over budget. With "under", they no longer do. I think that matches
+what "under" means, but a user who wanted that flexibility now has to write a
+bare "$30".
 
 
 

@@ -29,13 +29,54 @@ SCENARIOS = [
         "criterion": 2,
     },
     {
+        # Criterion 3: five different matching queries, one per try. Try 2
+        # takes the price fallback, so the state check covers that path too.
+        "name": "chosen item keeps its id",
+        "query": "(five queries, one per try)",
+        "queries": [
+            "vintage graphic tee under $30",
+            "pink shirt in 10$",
+            "denim jacket under $50",
+            "90s track jacket in size M",
+            "silk slip dress under $40",
+        ],
+        "wardrobe": "example",
+        "criterion": 3,
+    },
+    {
+        # Criterion 4 calls create_fit_card directly, exactly as written:
+        # the same outfit for five listings covering all three platforms.
+        "name": "fit card names the platform",
+        "query": "(create_fit_card on five listings)",
+        "kind": "fit_card",
+        "outfit": "baggy jeans and white sneakers",
+        "listing_ids": ["lst_006", "lst_003", "lst_010", "lst_004", "lst_011"],
+        "wardrobe": "example",
+        "criterion": 4,
+    },
+    {
+        # Criterion 5 as written: search_listings('vintage', max_price=B),
+        # one budget per try. The before run reached it through "vintage under
+        # $B" queries, which parsed to exactly this call; after the unit 4
+        # improvement "under" means a $0–B ceiling, so the scenario now makes
+        # the call the criterion names, directly.
+        "name": "results inside the price window",
+        "query": "(search_listings('vintage', max_price=B) at five budgets)",
+        "kind": "search",
+        "description": "vintage",
+        "budgets": [22, 33, 38, 45, 51],
+        "wardrobe": "example",
+        "criterion": 5,
+    },
+    {
         # A user with nothing saved. One of unit 4's three failure modes.
         "name": "empty wardrobe",
         "query": "denim jacket under $50",
         "wardrobe": "empty",
         "criterion": None,
     },
-    # TODO: add what your criteria 3, 4 and 5 need.
+    # Criteria 3 and 5 list one query per try under "queries"; criterion 4
+    # uses "kind": "fit_card". run_eval.py::run_once handles both.
     #
     # Set "criterion" to the number in criteria.md that the scenario tests.
     # "criterion": None means a diagnostic run — useful to have, but it isn't
@@ -58,6 +99,10 @@ def validate() -> list[str]:
     for i, scenario in enumerate(SCENARIOS, 1):
         if not scenario.get("query", "").strip():
             problems.append(f"scenario {i} has no query")
+        if scenario.get("kind") == "fit_card" and not scenario.get("listing_ids"):
+            problems.append(f"scenario {i} is a fit_card scenario with no listing_ids")
+        if scenario.get("kind") == "search" and not scenario.get("budgets"):
+            problems.append(f"scenario {i} is a search scenario with no budgets")
         if scenario.get("wardrobe") not in WARDROBES:
             problems.append(
                 f"scenario {i} has wardrobe {scenario.get('wardrobe')!r} — "
