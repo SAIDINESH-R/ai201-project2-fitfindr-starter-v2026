@@ -97,9 +97,11 @@ as using different words or dropping the size.
 - **Returns:** A `list[dict]` of at most `limit` listing dicts (10 by default,
   `config.SEARCH_RESULT_LIMIT`). Each dict is the full listing: `id`, `title`,
   `description`, `category`, `style_tags`, `size`, `condition`, `price` (float),
-  `colors`, `brand` (str or None) and `platform`. Results are ordered by the
-  number of keywords found in the title (most first), then by total keyword
-  matches, then by price (cheapest first).
+  `colors`, `brand` (str or None) and `platform`. Results are ordered with
+  listings whose title contains the item word (the last word of
+  `description`, e.g. "boots") first, added in unit 4. After that come the
+  number of keywords found in the title (most first), then total keyword
+  matches, then price (cheapest first).
 - **When it has nothing:** Returns an empty list `[]`, never None and never an
   exception.
 
@@ -521,6 +523,44 @@ forth changed the design.
   The next outfits came back as "Vintage Graphic Hoodie — Faded Black + Baggy
   straight-leg jeans, dark wash + Black combat boots + Black crossbody bag".
 
+**Unit 4, moment 6: arguing against my own verdicts**
+
+- *What I asked for:* the milestone's prompt: argue the opposite verdict for
+  each criterion as strongly as possible.
+- *What came back:* four arguments were weak. One wasn't: criterion 1 passed
+  5 of 5 while every try returned a hoodie for "vintage graphic tee", so it
+  measured completion, not whether the user got what they asked for.
+- *What I changed:* I revised criterion 1 underneath the original (left in
+  place). The revised version scored 0 of 5 on the same run, which gave me a
+  real miss to diagnose. The diagnosis traced it to "under $30" becoming the
+  $25–35 window, which filtered out all three tees, and that became the first
+  improvement.
+
+**Unit 4, moment 7: the failure I triggered on purpose**
+
+- *What I asked for:* help triggering the model-unavailable failure with a
+  broken key.
+- *What came back:* the first attempt hit a real 503 outage instead of a bad
+  key. Either way, `ModelUnavailable` escaped the loop and the item the search
+  had found was thrown away.
+- *What I changed:* a handler in `run_agent` that keeps the found item and
+  says what broke and what to do. Then I tested it with an actual broken key
+  and noticed the message still said "Try again in a minute", which is wrong
+  advice for a bad key, so I removed that line for key errors and trimmed the
+  raw `{'error': ...}` payload from the 503 message.
+
+**Unit 4, moment 8: keeping the test honest after the improvement**
+
+- *What I asked for:* to check whether my "under = ceiling" fix would affect
+  any other criterion.
+- *What came back:* criterion 5's scenario used `'vintage under $B'` queries
+  as a stand-in for `search_listings('vintage', max_price=B)`. After the fix
+  those queries would mean something else, so criterion 5 would quietly start
+  measuring a different thing.
+- *What I changed:* the scenario now makes the exact call the criterion is
+  written around. I noted that in The Improvement, and its prices are
+  identical before and after.
+
 <!-- ═══════════════════════ UNIT 4 — THE TEST ═══════════════════════
 
      Don't fill these in during unit 3.
@@ -528,10 +568,10 @@ forth changed the design.
 
 ---
 
-## Unit 4 Stretch Features (planned)
+## Unit 4 Stretch Features
 
-<!-- Declared before building, as the rubric requires. Each gets its evidence
-     here once built. -->
+<!-- Declared before building, as the rubric requires (committed in 771ddc2,
+     before any of them was built). Evidence below each. -->
 
 ### A second tool on MCP: `check_owned`
 
@@ -539,6 +579,14 @@ forth changed the design.
 be registered on the same server, with the same inputs and return value as in
 the Unit 3 Stretch Features, and `run_agent` will call it through
 `mcp_client.call_tool`. Evidence: a loop trace with both MCP calls visible.
+
+**Built.** `mcp_server.py` registers `check_owned(new_item: dict, wardrobe:
+dict) -> list[dict]` with its own description, and `python mcp_client.py`
+lists both tools. In `agent.py`, `check_owned` is now a same-named function
+that calls `call_tool("check_owned", {...})`. On eight comparisons (four
+listings, each with the example and the empty wardrobe), the MCP result was
+identical to the direct call. The trace below (steps 2, 3 and 9) shows both
+tools going through MCP in one run.
 
 ### Retry with looser constraints: drop the size
 
@@ -549,11 +597,134 @@ with those results. If the retry is also empty, the existing price fallback
 and stop rules apply as before. Evidence: a run log showing the retry and the
 dropped constraint.
 
+**Built.** The `"search"` step now branches to a new `"retry_without_size"`
+step when the search is empty and the query had a size. That step sets
+`session["dropped"] = "size XL"`, searches once more with `size=None` and the
+same price, and tells the user which constraint was dropped. If the retry is
+also empty, it goes on to the price fallback or the stop, and the stop message
+no longer suggests "try without size", since that was just tried. The shop's
+only Denim Jacket is size S:
+
+```
+$ python app.py ask 'denim jacket size XL' --trace
+[1] parse_query
+      in:  denim jacket size XL
+      out: description='denim jacket', size='XL', num_outfits=2
+[2] search_listings (via MCP)
+      in:  description='denim jacket', size='XL'
+      out: [] (empty)
+      →    branch: empty in size XL → retry once without the size
+[3] search_listings (via MCP)
+      in:  description='denim jacket'
+      out: 8 items: Denim Jacket — Light Wash, Cropped, High-Waisted Denim Shorts — Cutoff, Denim Vest — Medium Wash, Studded … +5 more
+      →    retry: dropped size XL → results found → select
+[4] select
+      out: Denim Jacket — Light Wash, Cropped ($42.0, poshmark)
+      →    already own this kind and colour → stop and ask the user
+
+  Found Denim Jacket — Light Wash, Cropped ($42, lst_007).
+  You already bought this exact item.
+  Show this one anyway (b) or outerwear in other colours (n)? [n] b
+[5] parse_query
+      in:  denim jacket size XL
+      out: description='denim jacket', size='XL', num_outfits=2
+[6] search_listings (via MCP)
+      in:  description='denim jacket', size='XL'
+      out: [] (empty)
+      →    branch: empty in size XL → retry once without the size
+[7] search_listings (via MCP)
+      in:  description='denim jacket'
+      out: 8 items: Denim Jacket — Light Wash, Cropped, High-Waisted Denim Shorts — Cutoff, Denim Vest — Medium Wash, Studded … +5 more
+      →    retry: dropped size XL → results found → select
+[8] select
+      out: Denim Jacket — Light Wash, Cropped ($42.0, poshmark)
+      →    first result → selected_item
+[9] check_owned (via MCP)
+      in:  Denim Jacket — Light Wash, Cropped ($42.0, poshmark)
+      out: 2 items: Vintage black denim jacket…
+[10] suggest_outfit
+      in:  item='Denim Jacket — Light Wash, Cropped', wardrobe_items=11, num_outfits=2
+      out: 1. Denim Jacket — Light Wash, Cropped + White ribbed tank top + Baggy straight-leg jeans, dark wash + Chunky w…
+[11] create_fit_card
+      in:  item='Denim Jacket — Light Wash, Cropped', outfit='(from suggest_outfit)'
+      out: Finally tracked down the ultimate light wash Wrangler cropped denim jacket on Poshmark for just $42! 🤠 It look…
+      →    done
+
+  Nothing in size XL, so I dropped the size and searched all sizes.
+
+  Found:    Denim Jacket — Light Wash, Cropped — $42.0 on poshmark
+```
+
+(The Denim Jacket was bought in the unit 3 style-memory demo, so the app asks
+first. Answering `b` restarts the run, which is why the steps repeat from
+[5].)
+
 ### A second measured improvement
 
 After the first improvement, a second change chosen from the diagnosis, run
 with `python run_eval.py` and logged as a third run log in the same table
 format, with a statement of whether it helped.
+
+**Built.** *What I changed:* one ranking rule in `tools.py::search_listings`.
+Listings whose title contains the item word (the last word of the
+description: "boots" in "black boots") now rank first. After that the order is
+the same as before (title matches, total matches, price).
+
+*Which failure it was meant to fix:* the pattern in the diagnosis. The keyword
+search treats an item word no differently from a colour or style word, so
+`'black boots'` returned Biker Shorts — Black (the shop has boots, but
+"black" scored the same as "boots" and the shorts were cheaper). The same
+mechanism showed up in the size-retry demo, where "something new" for a denim
+jacket picked a Denim Vest.
+
+*How it was measured:* a new diagnostic row, "top result is the item asked
+for", with one colour + item query per category (`black boots`, `grey tee`,
+`blue jeans`, `black jacket`, `brown belt`). PASS = the top result's title
+contains the item word. Search only, no model calls. Its "before" was
+measured on the unchanged code with `python run_eval.py --label before2
+--only "top result"` (`results/run_2026-10-14_0313_before2.md`), then the
+whole test was re-run after the change with `python run_eval.py --label
+after2` (`results/run_2026-10-14_0317_after2.md`, 35 model calls).
+
+### Run Log — After (second improvement)
+
+| Criterion | Target | Try 1 | Try 2 | Try 3 | Try 4 | Try 5 | Verdict |
+|---|---|---|---|---|---|---|---|
+| 1. A matching query completes all three tools | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 1. (revised in unit 4) …and the selected item is a tee | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 2. An impossible query stops before the second tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 3. The chosen item keeps its id through every tool | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 4. The fit card names where to buy the item | 4 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| 5. Search results stay inside the budget's price window | 5 of 5 | PASS | PASS | PASS | PASS | PASS | MET (5/5) |
+| Top result is the item asked for _(diagnostic)_, before this change | — | FAIL | PASS | PASS | FAIL | PASS | 3/5 |
+| Top result is the item asked for _(diagnostic)_, after this change | — | PASS | PASS | PASS | PASS | PASS | 5/5 |
+
+```
+before (results/run_2026-10-14_0313_before2.md)
+- Input: `black boots`    - selected_item: Biker Shorts — Black, Shiny ($14.0, depop)
+- Input: `black jacket`   - selected_item: 90s Leather Bomber — Black ($75.0, depop)
+
+after (results/run_2026-10-14_0317_after2.md)
+[1] search_listings (via MCP)
+      in:  description='black boots'
+      out: 10 items: Suede Chelsea Boots — Tan, Biker Shorts — Black, Shiny, Mesh Long-Sleeve Top — Black … +7 more
+[1] search_listings (via MCP)
+      in:  description='black jacket'
+      out: 10 items: Denim Jacket — Light Wash, Cropped, 90s Track Jacket — Navy/White Stripe, 90s Leather Bomber — Black … +7 more
+```
+
+*Did it help, and how do I know:* yes for what it targeted: the diagnostic
+row went from 3 of 5 to 5 of 5, and all five criteria plus revised criterion
+1 stayed at 5 of 5. Criterion 2's run also shows the size retry working
+inside the test ("retry: dropped size XXS → still empty → price fallback").
+
+It is not a clean win, though. For `'black jacket'` the old top result was
+the 90s Leather Bomber, which is black and is a jacket, but its title says
+"Bomber". The new top result is the Denim Jacket, the right type in the
+wrong colour (light blue). The rule trusts the word in the title, so a
+jacket not called a jacket loses to one that is. For `'black boots'` the
+change is a plain improvement (boots instead of shorts), even though the
+only boots are tan.
 
 ---
 
@@ -963,6 +1134,49 @@ bare "$30".
      you did. "I ran out of time" is fine if it's true. Pretending nothing is
      left is not. -->
 
+**No criterion is still missed.** After the two improvements, all five
+criteria and revised criterion 1 are at 5 of 5. That doesn't mean nothing is
+broken. These are the problems I know about, what I'd do, and why I stopped.
+
+1. **A jacket not called a jacket loses.** `'black jacket'` now returns the
+   light-blue Denim Jacket over the black Leather Bomber, because the ranking
+   trusts the word in the title. *What I'd do:* map item words to categories
+   or synonyms (jacket → bomber, blazer, windbreaker) and use colour as the
+   next tiebreak. *Why I stopped:* each improvement had to be one change,
+   measured. This would have been a third, and I'd rather report the
+   trade-off honestly than stack changes I can't tell apart.
+2. **Plurals and phrasings miss.** Whole-word matching means "tees" doesn't
+   find "tee" and "t-shirt" doesn't find "tee". This is the reason criterion
+   1 allows one miss. *What I'd do:* strip a trailing "s" and add a small
+   synonym list. *Why I stopped:* no criterion or diagnosed failure depended
+   on it in this test.
+3. **Description words still count.** The Low-Rise Cargo Pants match "tee"
+   because their description says "a long tee". Ranking the item word first
+   pushes them down, but they still appear in the list. *What I'd do:* match
+   the item word against the title only. Not done for the same one-change
+   reason as 1.
+4. **The "already own something similar" heads-up is loose.** `check_owned`
+   calls two things similar if they share any style tag, and most listings
+   share "vintage", so a track jacket was flagged as similar to two denim
+   jackets. *What I'd do:* ignore tags that most of the data shares.
+5. **"under" lost the window's flexibility.** Since the first improvement,
+   "under $30" no longer shows items a few dollars over. That was the reason
+   for the window in unit 3. A bare "$30" still gets it. I think "under"
+   should mean under, but it's a real trade-off.
+6. **Targets I'd tighten.** Criteria 1 and 4 aimed for 4 of 5 and scored 5 of
+   5 in all three runs. I named the tighter targets in the diagnosis (5 of 5
+   for both) but left the written criteria alone, because I'd only want to
+   raise them after a run designed with the stricter target in mind.
+7. **From my unit 3 feedback, not done:** there's no automated test file for
+   the helpers (`price_window`, `_size_pieces`, `parse_query`). Everything is
+   checked through `run_eval.py` and by hand. The "you already own this" flow
+   still re-runs `run_agent` from scratch, and the price window plus notice
+   logic is written twice (the fallback step and `_something_new`). I
+   prioritised the unit 4 test work and ran out of time for the refactor.
+8. **MCP is slow per call.** Each `call_tool` starts the server, so a run with
+   the fallback or the retry makes three or four server starts (about half a
+   second each). Fine for a test, not for a real app. I'd keep one connection
+   open.
 
 
 <!-- ═════════════════════════════════════════════════════════════════════
